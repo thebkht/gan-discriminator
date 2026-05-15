@@ -11,12 +11,17 @@ from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 import torch
 import yaml
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from data.augmentations import build_transforms
 
 
 VALID_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+DEFAULT_SPLIT_FRACTIONS = {
+    "train": 0.8034284473269854,
+    "val": 0.09806168835976585,
+    "test": 0.09850986431324883,
+}
 
 
 def _resolve_image_dir(path_like: Path) -> Path:
@@ -238,6 +243,45 @@ def collate_frame_pair_batch(batch: Sequence[Mapping[str, object]]) -> Dict[str,
     }
 
 
+def _resolve_split_indices(total_size: int, dataset_cfg: Mapping[str, object], split: str) -> range:
+    split_names = ("train", "val", "test")
+    fractions = {
+        "train": float(dataset_cfg.get("train_split", DEFAULT_SPLIT_FRACTIONS["train"])),
+        "val": float(dataset_cfg.get("val_split", DEFAULT_SPLIT_FRACTIONS["val"])),
+        "test": float(dataset_cfg.get("test_split", DEFAULT_SPLIT_FRACTIONS["test"])),
+    }
+    total_fraction = sum(fractions.values())
+    if abs(total_fraction - 1.0) > 1e-6:
+        raise ValueError("Dataset split fractions must sum to 1.0")
+    if total_size <= 0:
+        raise ValueError("Dataset must contain at least one sample")
+
+    counts = {name: int(total_size * fractions[name]) for name in split_names}
+    remainder = total_size - sum(counts.values())
+    ranked_names = sorted(split_names, key=lambda name: fractions[name], reverse=True)
+    for idx in range(remainder):
+        counts[ranked_names[idx % len(ranked_names)]] += 1
+
+    nonzero_splits = [name for name in split_names if fractions[name] > 0]
+    if total_size >= len(nonzero_splits):
+        for name in nonzero_splits:
+            if counts[name] == 0:
+                donor = max(
+                    (candidate for candidate in nonzero_splits if counts[candidate] > 1),
+                    key=lambda candidate: counts[candidate],
+                )
+                counts[donor] -= 1
+                counts[name] += 1
+
+    start = 0
+    bounds: Dict[str, range] = {}
+    for name in split_names:
+        stop = start + counts[name]
+        bounds[name] = range(start, stop)
+        start = stop
+    return bounds[split]
+
+
 def create_celeba_dataloader(
     config: Mapping[str, object] | str | Path,
     split: str = "train",
@@ -263,6 +307,8 @@ def create_celeba_dataloader(
         train=(split == "train"),
         limit=limit,
     )
+    split_indices = list(_resolve_split_indices(len(dataset), dataset_cfg, split))
+    dataset = Subset(dataset, split_indices)
 
     if shuffle is None:
         shuffle = split == "train"

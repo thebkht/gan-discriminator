@@ -27,11 +27,15 @@ dataloader:
   drop_last: false
 
 training:
-  epochs: 20
+  epochs: 100
   learning_rate: 0.0002
   optimizer: adam
   betas:
     - 0.5
     - 0.999
   scheduler: CosineAnnealingLR
+  scheduler_t_max: 100
   dropout: 0.3
+  checkpoint_metric: balanced_accuracy
+  seed: 42
+  checkpoint_name: phase1_branch_a_best.pt
