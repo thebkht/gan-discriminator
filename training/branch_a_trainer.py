@@ -47,6 +47,17 @@ def _format_progress_bar(current: int, total: int, *, width: int = 12) -> str:
     return ("━" * filled) + ("─" * (width - filled))
 
 
+def _format_metric_value(value: float, *, precision: int = 4) -> str:
+    return f"{value:.{precision}f}"
+
+
+def _format_epoch_prefix(epoch: int, total_epochs: int, *, show_epoch: bool) -> str:
+    formatted_prefix = f"Epoch {epoch:>2d}/{total_epochs:<2d}"
+    if not show_epoch:
+        return " " * len(formatted_prefix)
+    return formatted_prefix
+
+
 @dataclass
 class EpochResult:
     epoch: int
@@ -170,10 +181,16 @@ def _run_epoch(
         batches_per_second = batch_index / elapsed_seconds if elapsed_seconds > 0 else 0.0
         eta_seconds = average_batch_seconds * (num_batches - batch_index)
         percent_complete = (100.0 * batch_index / num_batches) if num_batches > 0 else 0.0
+        epoch_prefix = _format_epoch_prefix(
+            epoch,
+            total_epochs,
+            show_epoch=split_name.lower() != "val",
+        )
         print(
-            f"\r  Epoch {epoch}/{total_epochs} | {split_name} {percent_complete:3.0f}% "
-            f"{_format_progress_bar(batch_index, num_batches)} | "
-            f"loss: {running_loss:.4f} | {batches_per_second:.1f}it/s {_format_duration(elapsed_seconds)} "
+            f"\r{epoch_prefix}   "
+            f"loss {_format_metric_value(running_loss, precision=6):>8}   "
+            f"{split_name:<5} {percent_complete:>3.0f}% {_format_progress_bar(batch_index, num_batches, width=14)} "
+            f"{batch_index:>3d}/{num_batches:<3d} {batches_per_second:>3.1f}it/s {_format_duration(elapsed_seconds)} "
             f"< {_format_duration(eta_seconds)}",
             end=progress_end,
             flush=True,
@@ -326,13 +343,13 @@ def _print_epoch_summary(
 ) -> None:
     print(
         (
-            f"\r  Epoch {epoch}/{total_epochs} | "
-            f"Train Loss: {train_metrics['loss']:.4f} | "
-            f"Val Loss: {val_metrics['loss']:.4f} | "
-            f"Bal Acc: {val_metrics['balanced_accuracy']:.4f} | "
-            f"F1: {val_metrics['f1']:.4f} | "
-            f"LR: {current_lr:.6f} | "
-            f"Best: {best_epoch}/{total_epochs} ({best_metrics['balanced_accuracy']:.4f})"
+            f"\n{_format_epoch_prefix(epoch, total_epochs, show_epoch=False)}   "
+            f"train_loss {_format_metric_value(train_metrics['loss'], precision=6):>8}   "
+            f"val_loss {_format_metric_value(val_metrics['loss'], precision=6):>8}   "
+            f"bal_acc {_format_metric_value(val_metrics['balanced_accuracy'], precision=4):>6}   "
+            f"f1 {_format_metric_value(val_metrics['f1'], precision=4):>6}   "
+            f"lr {current_lr:>8.6f}   "
+            f"best {best_epoch:>2d}/{total_epochs:<2d} {_format_metric_value(best_metrics['balanced_accuracy'], precision=4):>6}\n"
         ),
         flush=True,
     )
