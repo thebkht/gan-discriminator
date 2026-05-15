@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import random
 import time
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 import numpy as np
 import torch
@@ -45,8 +46,17 @@ def _set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _as_str_key_mapping(value: object, *, context: str) -> Dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"Expected mapping for {context}")
+    return {str(key): item for key, item in value.items()}
+
+
 def _build_optimizer(model: nn.Module, training_cfg: Dict[str, Any]) -> Adam:
-    betas = tuple(float(beta) for beta in training_cfg["betas"])
+    beta_values = cast(list[object], training_cfg["betas"])
+    if len(beta_values) != 2:
+        raise ValueError("Adam betas must contain exactly two values")
+    betas = (float(beta_values[0]), float(beta_values[1]))
     return Adam(model.parameters(), lr=float(training_cfg["learning_rate"]), betas=betas)
 
 
@@ -55,6 +65,29 @@ def _build_scheduler(optimizer: Adam, training_cfg: Dict[str, Any]) -> CosineAnn
     if scheduler_name != "CosineAnnealingLR":
         raise ValueError(f"Unsupported scheduler for Week 1 baseline: {scheduler_name}")
     return CosineAnnealingLR(optimizer, T_max=int(training_cfg["scheduler_t_max"]))
+
+
+def _resolve_device(device_override: Optional[str] = None) -> torch.device:
+    requested = device_override.lower() if device_override is not None else None
+
+    if requested is not None:
+        if requested == "cuda":
+            if not torch.cuda.is_available():
+                raise RuntimeError("Requested device 'cuda' but CUDA is not available")
+            return torch.device("cuda")
+        if requested == "mps":
+            if not torch.backends.mps.is_available():
+                raise RuntimeError("Requested device 'mps' but MPS is not available")
+            return torch.device("mps")
+        if requested == "cpu":
+            return torch.device("cpu")
+        raise ValueError(f"Unsupported device override: {device_override}")
+
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
 
 
 def _run_epoch(
@@ -199,6 +232,58 @@ def _write_summary_files(run_dir: Path, payload: Dict[str, Any]) -> None:
     )
 
 
+def _print_run_header(
+    *,
+    run_name: str,
+    device: torch.device,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    training_cfg: Dict[str, Any],
+) -> None:
+    print(
+        (
+            f"Starting Branch A baseline run '{run_name}' on {device}. "
+            f"epochs={training_cfg['epochs']} "
+            f"train_batches={len(train_loader)} "
+            f"val_batches={len(val_loader)} "
+            f"batch_size={train_loader.batch_size}"
+        ),
+        flush=True,
+    )
+    if device.type == "cpu":
+        print(
+            "Warning: training is running on CPU. A full 100-epoch CelebA run may take a long time.",
+            flush=True,
+        )
+
+
+def _print_epoch_summary(
+    *,
+    epoch: int,
+    total_epochs: int,
+    train_metrics: Dict[str, float],
+    val_metrics: Dict[str, float],
+    current_lr: float,
+    best_epoch: int,
+    best_metrics: Dict[str, float],
+) -> None:
+    print(
+        (
+            f"[Epoch {epoch}/{total_epochs}] "
+            f"train_loss={train_metrics['loss']:.4f} "
+            f"train_bal_acc={train_metrics['balanced_accuracy']:.4f} "
+            f"train_f1={train_metrics['f1']:.4f} "
+            f"val_loss={val_metrics['loss']:.4f} "
+            f"val_bal_acc={val_metrics['balanced_accuracy']:.4f} "
+            f"val_f1={val_metrics['f1']:.4f} "
+            f"lr={current_lr:.6f} "
+            f"best_epoch={best_epoch} "
+            f"best_val_bal_acc={best_metrics['balanced_accuracy']:.4f}"
+        ),
+        flush=True,
+    )
+
+
 def train_branch_a(
     config_path: str | Path,
     *,
@@ -207,16 +292,17 @@ def train_branch_a(
     run_name: str = "branch_a_baseline",
     tracker_backend: Optional[str] = None,
     epochs_override: Optional[int] = None,
+    device_override: Optional[str] = None,
 ) -> Dict[str, Any]:
-    config = dict(load_config(config_path))
-    training_cfg = dict(config["training"])
+    config = _as_str_key_mapping(load_config(config_path), context="config")
+    training_cfg = _as_str_key_mapping(config["training"], context="config.training")
     if epochs_override is not None:
         training_cfg["epochs"] = int(epochs_override)
     effective_config = dict(config)
     effective_config["training"] = training_cfg
     _set_seed(int(training_cfg["seed"]))
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = _resolve_device(device_override)
     model = BranchABaseline(dropout=float(training_cfg["dropout"])).to(device)
     optimizer = _build_optimizer(model, training_cfg)
     scheduler = _build_scheduler(optimizer, training_cfg)
@@ -225,9 +311,10 @@ def train_branch_a(
     train_loader = create_celeba_dataloader(config, split="train", limit=train_limit)
     val_loader = create_celeba_dataloader(config, split="val", shuffle=False, limit=val_limit)
 
-    checkpoints_dir = Path(config["paths"]["checkpoints_dir"])
+    paths_cfg = _as_str_key_mapping(config["paths"], context="config.paths")
+    checkpoints_dir = Path(str(paths_cfg["checkpoints_dir"]))
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
-    run_dir = Path(config["paths"]["runs_dir"]) / run_name
+    run_dir = Path(str(paths_cfg["runs_dir"])) / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
     tracker: Optional[Tracker] = None
@@ -237,6 +324,13 @@ def train_branch_a(
     history: list[EpochResult] = []
     best_epoch = 0
     best_metrics: Optional[Dict[str, float]] = None
+    _print_run_header(
+        run_name=run_name,
+        device=device,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        training_cfg=training_cfg,
+    )
 
     try:
         for epoch in range(1, int(training_cfg["epochs"]) + 1):
@@ -298,6 +392,16 @@ def train_branch_a(
                     },
                     checkpoints_dir / str(training_cfg["checkpoint_name"]),
                 )
+
+            _print_epoch_summary(
+                epoch=epoch,
+                total_epochs=int(training_cfg["epochs"]),
+                train_metrics=train_metrics,
+                val_metrics=val_metrics,
+                current_lr=current_lr,
+                best_epoch=best_epoch,
+                best_metrics=cast(Dict[str, float], best_metrics),
+            )
     finally:
         if tracker is not None:
             tracker.flush()

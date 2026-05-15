@@ -16,6 +16,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-name", default="branch_a_baseline", help="Run directory name")
     parser.add_argument("--epochs-override", type=int, default=None, help="Optional epoch override for dry runs")
     parser.add_argument(
+        "--device",
+        choices=("cpu", "cuda", "mps"),
+        default=None,
+        help="Optional device override. Defaults to cuda, then mps, then cpu.",
+    )
+    parser.add_argument(
         "--tracker-backend",
         default=None,
         help="Optional tracking backend. Set to tensorboard to emit TensorBoard logs.",
@@ -32,6 +38,7 @@ def main() -> None:
         run_name=args.run_name,
         tracker_backend=args.tracker_backend,
         epochs_override=args.epochs_override,
+        device_override=args.device,
     )
     print(json.dumps(summary, indent=2))
 
