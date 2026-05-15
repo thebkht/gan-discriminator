@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+import sys
 import time
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
@@ -112,7 +113,6 @@ def _run_epoch(
     epoch: int = 1,
     total_epochs: int = 1,
     split_name: str = "train",
-    log_interval: int = 100,
 ) -> Dict[str, float]:
     is_train = optimizer is not None
     model.train(is_train)
@@ -123,6 +123,7 @@ def _run_epoch(
     start = time.perf_counter()
 
     num_batches = len(dataloader)
+    progress_end = "" if sys.stdout.isatty() else "\n"
     for batch_index, batch in enumerate(dataloader, start=1):
         frame_a = batch["frame_a"].to(device)
         frame_b = batch["frame_b"].to(device)
@@ -144,16 +145,16 @@ def _run_epoch(
         all_logits.append(logits.detach().cpu().numpy())
         all_labels.append(labels.detach().cpu().numpy())
 
-        if batch_index % log_interval == 0 or batch_index == num_batches:
-            running_loss = total_loss / total_examples
-            print(
-                (
-                    f"[Epoch {epoch}/{total_epochs}][{split_name}] "
-                    f"batch={batch_index}/{num_batches} "
-                    f"running_loss={running_loss:.4f}"
-                ),
-                flush=True,
-            )
+        running_loss = total_loss / total_examples
+        print(
+            f"\r  Epoch {epoch}/{total_epochs} | {split_name} {batch_index}/{num_batches} | "
+            f"loss: {running_loss:.4f}",
+            end=progress_end,
+            flush=True,
+        )
+
+    if progress_end == "":
+        print()
 
     if total_examples == 0:
         raise ValueError("Received an empty dataloader split; cannot compute metrics")
@@ -163,6 +164,7 @@ def _run_epoch(
     labels = np.concatenate(all_labels).astype(np.int64)
     metrics = compute_binary_classification_metrics(logits=logits, labels=labels, average_loss=average_loss)
     metrics["duration_seconds"] = time.perf_counter() - start
+    metrics["num_batches"] = float(len(dataloader))
     return metrics
 
 
@@ -271,11 +273,11 @@ def _print_run_header(
 ) -> None:
     print(
         (
-            f"Starting Branch A baseline run '{run_name}' on {device}. "
+            f"Starting Branch A baseline run '{run_name}' on {device}."
             f"epochs={training_cfg['epochs']} "
             f"train_batches={len(train_loader)} "
             f"val_batches={len(val_loader)} "
-            f"batch_size={train_loader.batch_size}"
+            f"batch_size={train_loader.batch_size} \n"
         ),
         flush=True,
     )
@@ -298,19 +300,34 @@ def _print_epoch_summary(
 ) -> None:
     print(
         (
-            f"[Epoch {epoch}/{total_epochs}] "
-            f"train_loss={train_metrics['loss']:.4f} "
-            f"train_bal_acc={train_metrics['balanced_accuracy']:.4f} "
-            f"train_f1={train_metrics['f1']:.4f} "
-            f"val_loss={val_metrics['loss']:.4f} "
-            f"val_bal_acc={val_metrics['balanced_accuracy']:.4f} "
-            f"val_f1={val_metrics['f1']:.4f} "
-            f"lr={current_lr:.6f} "
-            f"best_epoch={best_epoch} "
-            f"best_val_bal_acc={best_metrics['balanced_accuracy']:.4f}"
+            f"\r  Epoch {epoch}/{total_epochs} | "
+            f"Train Loss: {train_metrics['loss']:.4f} | "
+            f"Val Loss: {val_metrics['loss']:.4f} | "
+            f"Bal Acc: {val_metrics['balanced_accuracy']:.4f} | "
+            f"F1: {val_metrics['f1']:.4f} | "
+            f"LR: {current_lr:.6f} | "
+            f"Best: {best_epoch}/{total_epochs} ({best_metrics['balanced_accuracy']:.4f})"
         ),
         flush=True,
     )
+
+
+def _print_training_footer(
+    *,
+    total_epochs: int,
+    total_duration_seconds: float,
+    run_dir: Path,
+    checkpoint_path: Path,
+    summary_payload: Dict[str, Any],
+) -> None:
+    print(f"\n{total_epochs} epochs completed in {total_duration_seconds / 3600:.3f} hours.", flush=True)
+    print(f"Results saved to {run_dir}", flush=True)
+    print("\nTraining complete", flush=True)
+    print(f"Best checkpoint : {checkpoint_path}", flush=True)
+    print(f"Selected ckpt  : {checkpoint_path}", flush=True)
+    print(f"Top-1 accuracy : {summary_payload['best_validation_metrics']['balanced_accuracy']}", flush=True)
+    print(f"Top-5 accuracy : {summary_payload['best_validation_metrics']['f1']}", flush=True)
+    print(f"Report saved   : {run_dir / 'benchmark_summary.json'}", flush=True)
 
 
 def train_branch_a(
@@ -323,6 +340,7 @@ def train_branch_a(
     epochs_override: Optional[int] = None,
     device_override: Optional[str] = None,
 ) -> Dict[str, Any]:
+    training_start = time.perf_counter()
     config = _as_str_key_mapping(load_config(config_path), context="config")
     training_cfg = _as_str_key_mapping(config["training"], context="config.training")
     if epochs_override is not None:
@@ -343,6 +361,7 @@ def train_branch_a(
     paths_cfg = _as_str_key_mapping(config["paths"], context="config.paths")
     checkpoints_dir = Path(str(paths_cfg["checkpoints_dir"]))
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = checkpoints_dir / str(training_cfg["checkpoint_name"])
     run_dir = Path(str(paths_cfg["runs_dir"])) / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -360,7 +379,6 @@ def train_branch_a(
         val_loader=val_loader,
         training_cfg=training_cfg,
     )
-
     try:
         for epoch in range(1, int(training_cfg["epochs"]) + 1):
             train_metrics = _run_epoch(
@@ -372,7 +390,6 @@ def train_branch_a(
                 epoch=epoch,
                 total_epochs=int(training_cfg["epochs"]),
                 split_name="train",
-                log_interval=100,
             )
             val_metrics = _run_epoch(
                 model,
@@ -382,7 +399,6 @@ def train_branch_a(
                 epoch=epoch,
                 total_epochs=int(training_cfg["epochs"]),
                 split_name="val",
-                log_interval=50,
             )
             current_lr = float(optimizer.param_groups[0]["lr"])
             scheduler.step()
@@ -438,7 +454,7 @@ def train_branch_a(
                         },
                         "config": effective_config,
                     },
-                    checkpoints_dir / str(training_cfg["checkpoint_name"]),
+                    checkpoint_path,
                 )
 
             _print_epoch_summary(
@@ -468,4 +484,11 @@ def train_branch_a(
         run_dir=run_dir,
     )
     _write_summary_files(run_dir, summary_payload)
+    _print_training_footer(
+        total_epochs=int(training_cfg["epochs"]),
+        total_duration_seconds=time.perf_counter() - training_start,
+        run_dir=run_dir,
+        checkpoint_path=checkpoint_path,
+        summary_payload=summary_payload,
+    )
     return summary_payload

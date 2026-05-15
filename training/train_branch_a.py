@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
-
 from training.branch_a_trainer import train_branch_a
 
 
@@ -31,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    summary = train_branch_a(
+    train_branch_a(
         args.config,
         train_limit=args.train_limit,
         val_limit=args.val_limit,
@@ -40,7 +38,6 @@ def main() -> None:
         epochs_override=args.epochs_override,
         device_override=args.device,
     )
-    print(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":
