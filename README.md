@@ -104,6 +104,17 @@ The project is based on CelebA.
 | Attributes        | 40 binary labels per image   |
 | License           | Non-commercial research only |
 
+Download command:
+
+```bash
+./scripts/download_celeba.sh
+```
+
+Requirements for the download script:
+
+- Kaggle CLI installed
+- Kaggle API credentials available at `~/.kaggle/kaggle.json`
+
 Planned split:
 
 | Split |   Count |
