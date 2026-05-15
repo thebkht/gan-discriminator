@@ -1,6 +1,6 @@
 # Hybrid Three-Branch GAN Discriminator for Deepfake Face Detection
 
-This repository contains the project plan and dataset assets for a deepfake face detection system based on a hybrid three-branch discriminator. The design follows the master plan in [docs/master-plan.md](/Users/thebkht/Sejong%20Uni/Pattern%20Regocnition/project/docs/master-plan.md) and targets improved out-of-domain robustness compared with single-branch CNN discriminators.
+This repository contains the project plan and dataset assets for a deepfake face detection system based on a hybrid three-branch discriminator. The design follows the master plan in [docs/master-plan.md](/docs/master-plan.md) and targets improved out-of-domain robustness compared with single-branch CNN discriminators.
 
 ## Overview
 
@@ -95,22 +95,22 @@ deepfake_detector/
 
 The project is based on CelebA.
 
-| Property | Value |
-| --- | --- |
-| Total images | 202,599 |
-| Identities | 10,177 |
-| Native resolution | 178 x 218 |
-| Target resolution | 64 x 64 |
-| Attributes | 40 binary labels per image |
-| License | Non-commercial research only |
+| Property          | Value                        |
+| ----------------- | ---------------------------- |
+| Total images      | 202,599                      |
+| Identities        | 10,177                       |
+| Native resolution | 178 x 218                    |
+| Target resolution | 64 x 64                      |
+| Attributes        | 40 binary labels per image   |
+| License           | Non-commercial research only |
 
 Planned split:
 
-| Split | Count |
-| --- | ---: |
+| Split |   Count |
+| ----- | ------: |
 | Train | 162,770 |
-| Val | 19,867 |
-| Test | 19,962 |
+| Val   |  19,867 |
+| Test  |  19,962 |
 
 ## Data Pipeline
 
@@ -147,16 +147,16 @@ The training strategy is split into four phases to reduce unstable co-adaptation
 
 Key hyperparameters from the plan:
 
-| Parameter | Value |
-| --- | --- |
-| Image size | `64 x 64` |
-| Batch size | `64` |
-| Optimizer | `Adam(beta1=0.5, beta2=0.999)` |
-| LR (phases 1-3) | `2e-4` |
-| LR (phase 4) | `5e-5` |
-| Epochs per phase | `20` |
-| Scheduler | `CosineAnnealingLR` |
-| Dropout | `0.3` |
+| Parameter        | Value                          |
+| ---------------- | ------------------------------ |
+| Image size       | `64 x 64`                      |
+| Batch size       | `64`                           |
+| Optimizer        | `Adam(beta1=0.5, beta2=0.999)` |
+| LR (phases 1-3)  | `2e-4`                         |
+| LR (phase 4)     | `5e-5`                         |
+| Epochs per phase | `20`                           |
+| Scheduler        | `CosineAnnealingLR`            |
+| Dropout          | `0.3`                          |
 
 ## Evaluation
 
@@ -175,15 +175,15 @@ Planned out-of-domain evaluation includes:
 
 ## Expected Performance
 
-| Configuration | Balanced Accuracy | F1 |
-| --- | ---: | ---: |
-| Branch A only | 77.8% | 0.70 |
-| Branch B only | 88.9% to 94.4% | 0.91 |
-| Branch C only | 83.3% | 0.80 |
-| A + B ensemble | 89.5% | 0.88 |
-| A + C ensemble | 88.9% | 0.85 |
-| B + C ensemble | 94.4% | 0.93 |
-| A + B + C ensemble | 89.5% | 0.86 |
+| Configuration      | Balanced Accuracy |   F1 |
+| ------------------ | ----------------: | ---: |
+| Branch A only      |             77.8% | 0.70 |
+| Branch B only      |    88.9% to 94.4% | 0.91 |
+| Branch C only      |             83.3% | 0.80 |
+| A + B ensemble     |             89.5% | 0.88 |
+| A + C ensemble     |             88.9% | 0.85 |
+| B + C ensemble     |             94.4% | 0.93 |
+| A + B + C ensemble |             89.5% | 0.86 |
 
 ## Planned Dependencies
 
@@ -216,4 +216,4 @@ At the current stage, the repository is documentation-first. Recommended next st
 
 ## Reference Document
 
-For the full technical specification, milestones, risks, and citations, see [docs/master-plan.md](/Users/thebkht/Sejong%20Uni/Pattern%20Regocnition/project/docs/master-plan.md).
+For the full technical specification, milestones, risks, and citations, see [docs/master-plan.md](/docs/master-plan.md).
