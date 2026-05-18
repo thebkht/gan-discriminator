@@ -1,216 +1,108 @@
-# Hybrid Three-Branch GAN Discriminator for Deepfake Face Detection
+# Hybrid Three-Branch Deepfake Detector
 
-This repository contains the project plan and dataset assets for a deepfake face detection system based on a hybrid three-branch discriminator. The design follows the master plan in [docs/master-plan.md](/docs/master-plan.md) and targets improved out-of-domain robustness compared with single-branch CNN discriminators.
+This repository contains the early implementation of a deepfake face detection project built around a planned three-branch discriminator. The current codebase implements the Week 1 baseline only: a working Branch A spatial model, a CelebA pair dataset pipeline, an optical-flow precompute utility, and tests for the baseline training path.
 
-## Overview
+The long-term design is documented in [docs/master-plan.md](docs/master-plan.md), but the repository is not at full three-branch parity yet. The `README` below describes what is implemented now.
 
-The proposed detector combines three complementary signals:
+## Current Status
 
-- Branch A: CNN spatial features from a single face frame
-- Branch B: Spatiotemporal embedding derivatives from consecutive frame pairs
-- Branch C: Physics-based dynamics using optical flow and HSV photometrics
+- Implemented: Branch A baseline training on paired CelebA images
+- Implemented: CelebA dataloader with real/fake pair construction
+- Implemented: offline Farneback optical-flow precompute utility
+- Implemented: metric computation, checkpointing, run summaries, and optional TensorBoard logging
+- Not implemented yet: Branch B, Branch C, and the final fused three-branch discriminator
 
-These branch outputs are fused by a fully connected head to classify samples as real or fake. The recommended deployment configuration from the plan is the `B + C` ensemble, which is expected to provide the strongest out-of-domain performance.
-
-## Project Goal
-
-Standard single-branch discriminators can perform well on in-distribution samples but degrade heavily on unseen generation methods. This project aims to recover robust out-of-domain detection performance, with a target of:
-
-- Balanced accuracy: `>= 94%`
-- F1 score: `>= 0.93`
-
-## Repository Status
-
-The current repository contains:
-
-- `docs/master-plan.md`: full architecture, build plan, metrics, and dependency specification
-- Week 1 scaffold for `config/`, `data/`, `models/`, `training/`, `evaluation/`, `checkpoints/`, `runs/`, `tests/`
-- CelebA bootstrap, validation, and optical-flow precompute utilities
-- Data pipeline tests for loader contract, augmentations, bootstrap failures, and flow smoke checks
-
-## Project Structure
+## Repository Layout
 
 ```text
 deepfake_detector/
 ├── config/
 │   └── config.yaml
 ├── data/
-│   ├── __init__.py
+│   ├── augmentations.py
 │   ├── celeba_loader.py
-│   ├── precompute_flow.py
-│   └── augmentations.py
-├── models/
-│   └── __init__.py
-├── training/
-│   ├── __init__.py
-│   └── tracker.py
+│   └── precompute_flow.py
+├── docs/
+│   ├── build-plan.md
+│   └── master-plan.md
 ├── evaluation/
-│   └── __init__.py
-├── checkpoints/
-├── runs/
+│   └── metrics.py
+├── models/
+│   └── branch_a.py
 ├── scripts/
 │   └── download_celeba.sh
 ├── tests/
 │   ├── test_bootstrap_and_imports.py
+│   ├── test_branch_a_baseline.py
 │   └── test_data_pipeline.py
+├── training/
+│   ├── branch_a_trainer.py
+│   ├── tracker.py
+│   └── train_branch_a.py
+├── pyrightconfig.json
 ├── requirements.txt
 └── README.md
 ```
 
-## Architecture Summary
+## Implemented Baseline
 
-### Branch A: CNN Spatial
+The current model in [models/branch_a.py](models/branch_a.py) is a Branch A baseline:
 
-- Input: single `64 x 64 x 3` frame
-- Output: `2048-D` feature vector
-- Backbone: 5 convolution blocks with spectral normalization and LeakyReLU
+- Input: two `64 x 64` RGB face frames
+- Encoder: five convolution blocks with spectral normalization and LeakyReLU
+- Classifier: concatenated twin-frame features passed through an MLP
+- Output: one real/fake logit for the frame pair
 
-### Branch B: Spatiotemporal
+This is a pair classifier, not a full GAN discriminator and not the final three-branch model described in the planning docs.
 
-- Input: consecutive frame pair
-- Output: `8-D` temporal descriptor
-- Signal: embedding velocity, curvature, and related temporal statistics
+## Dataset Pipeline
 
-### Branch C: Physics-Based Dynamics
+The dataset code in [data/celeba_loader.py](data/celeba_loader.py) builds pair-labeled samples from CelebA.
 
-- Input: raw or precomputed frame-pair dynamics
-- Output: `28-D` descriptor
-- Signal: optical flow statistics and HSV photometric consistency
+Real pairs:
 
-### Fusion Head
+- If `identity_CelebA.txt` is present, the loader pairs images from the same identity.
+- If the identity file is missing, it falls back to adjacent-image pairing.
 
-- Concatenated input: `2084-D`
-- MLP: `2084 -> 512 -> 128 -> 1`
-- Output: real/fake logit
+Fake pairs:
 
-## Dataset
+- The current baseline does not use GAN-generated or diffusion-generated fakes.
+- Instead, it duplicates one image and injects Gaussian noise into the second frame.
 
-The project is based on CelebA.
+Transforms from [data/augmentations.py](data/augmentations.py):
 
-| Property          | Value                        |
-| ----------------- | ---------------------------- |
-| Total images      | 202,599                      |
-| Identities        | 10,177                       |
-| Native resolution | 178 x 218                    |
-| Target resolution | 64 x 64                      |
-| Attributes        | 40 binary labels per image   |
-| License           | Non-commercial research only |
+- Resize to `64 x 64`
+- Random horizontal flip during training
+- Color jitter during training
+- Normalize tensors to `[-1, 1]`
 
-Download command:
+This means current metrics are only useful as a smoke-tested baseline and are not representative of real deepfake performance.
 
-```bash
-./scripts/download_celeba.sh
-```
+## Configuration
 
-Requirements for the download script:
+The default config lives at [config/config.yaml](config/config.yaml).
 
-- Kaggle CLI installed
-- Kaggle API credentials available at `~/.kaggle/kaggle.json`
+Key defaults:
 
-Planned split:
+- Dataset size target: `202,599` images
+- Native resolution target: `178 x 218`
+- Batch size: `64`
+- Epochs: `100`
+- Learning rate: `2e-4`
+- Scheduler: `CosineAnnealingLR`
+- Checkpoint metric: `balanced_accuracy`
+- Default checkpoint name: `phase1_branch_a_best.pt`
 
-| Split |   Count |
-| ----- | ------: |
-| Train | 162,770 |
-| Val   |  19,867 |
-| Test  |  19,962 |
+By default, outputs are written to:
 
-## Data Pipeline
+- `checkpoints/phase1_branch_a_best.pt`
+- `runs/<run-name>/benchmark_summary.json`
+- `runs/<run-name>/benchmark_summary.md`
+- `runs/<run-name>/metrics_history.json`
 
-Planned real/fake sampling:
+## Setup
 
-- Real pair: two images from the same identity
-- Fake pair: one image plus a perturbed or synthetic counterpart
-
-Train-time augmentation:
-
-- Random horizontal flip
-- Color jitter
-- Normalize to `[-1, 1]`
-
-Optical flow is intended to be precomputed offline and cached as `.pt` tensors for faster training.
-
-Example command:
-
-```bash
-python data/precompute_flow.py \
-  --img-dir /data/celeba/img_align_celeba \
-  --out-dir /data/celeba/flow_cache \
-  --method farneback
-```
-
-## Training Plan
-
-The training strategy is split into four phases to reduce unstable co-adaptation between branches:
-
-1. Train Branch A plus the fusion head
-2. Freeze Branch A and train Branch B plus the fusion head
-3. Freeze Branches A and B and train Branch C plus the fusion head
-4. Unfreeze all branches and fine-tune the full system with a lower learning rate
-
-Key hyperparameters from the plan:
-
-| Parameter        | Value                          |
-| ---------------- | ------------------------------ |
-| Image size       | `64 x 64`                      |
-| Batch size       | `64`                           |
-| Optimizer        | `Adam(beta1=0.5, beta2=0.999)` |
-| LR (phases 1-3)  | `2e-4`                         |
-| LR (phase 4)     | `5e-5`                         |
-| Epochs per phase | `20`                           |
-| Scheduler        | `CosineAnnealingLR`            |
-| Dropout          | `0.3`                          |
-
-## Evaluation
-
-Primary metrics:
-
-- Balanced accuracy
-- F1 score
-- AUC-ROC
-- Confusion matrix
-
-Planned out-of-domain evaluation includes:
-
-- Style-transferred faces
-- Face reenactment outputs
-- Diffusion-based face synthesis
-
-## Expected Performance
-
-| Configuration      | Balanced Accuracy |   F1 |
-| ------------------ | ----------------: | ---: |
-| Branch A only      |             77.8% | 0.70 |
-| Branch B only      |    88.9% to 94.4% | 0.91 |
-| Branch C only      |             83.3% | 0.80 |
-| A + B ensemble     |             89.5% | 0.88 |
-| A + C ensemble     |             88.9% | 0.85 |
-| B + C ensemble     |             94.4% | 0.93 |
-| A + B + C ensemble |             89.5% | 0.86 |
-
-## Planned Dependencies
-
-```text
-torch>=2.1.0
-torchvision>=0.16.0
-opencv-python>=4.8.0
-numpy>=1.24.0
-scikit-learn>=1.3.0
-Pillow>=10.0.0
-tqdm>=4.66.0
-tensorboard>=2.14.0
-pyyaml>=6.0
-```
-
-Install command once `requirements.txt` exists:
-
-```bash
-pip install -r requirements.txt
-```
-
-## Getting Started
-
-### 1. Create a Python environment
+Create an environment and install dependencies:
 
 ```bash
 python3 -m venv .venv
@@ -219,99 +111,123 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 2. Configure Kaggle access
+Dependencies from [requirements.txt](requirements.txt):
 
-The dataset bootstrap script requires:
+- `torch`
+- `torchvision`
+- `opencv-python`
+- `numpy`
+- `scikit-learn`
+- `Pillow`
+- `tqdm`
+- `tensorboard`
+- `pyyaml`
 
-- `kaggle` CLI installed in the active environment
-- credentials at `~/.kaggle/kaggle.json`
+## Download CelebA
 
-You can verify both quickly with:
-
-```bash
-command -v kaggle
-ls ~/.kaggle/kaggle.json
-```
-
-### 3. Download and extract CelebA
-
-```bash
-./scripts/download_celeba.sh
-```
-
-Expected extracted image directory:
-
-```text
-data/celeba/img_align_celeba/img_align_celeba
-```
-
-### 4. Validate the dataset
-
-The Week 1 target is:
-
-- `202,599` images
-- native resolution `178x218`
-
-Quick checks:
+Use the bootstrap script:
 
 ```bash
-find data/celeba/img_align_celeba -type f \( -name '*.jpg' -o -name '*.jpeg' -o -name '*.png' \) | wc -l
-python3 - <<'PY'
-from data.celeba_loader import validate_celeba_dataset
-print(validate_celeba_dataset("data/celeba/img_align_celeba", sample_count=3))
-PY
+bash scripts/download_celeba.sh
 ```
 
-### 5. Understand the Week 1 data contract
+Prerequisites:
 
-- `CelebAFramePairDataset` returns resized `64x64` tensors as `frame_a` and `frame_b`
-- labels are `0` for real pairs and `1` for fake pairs
-- real pairs use same-identity sampling when `identity_CelebA.txt` is present
-- if `identity_CelebA.txt` is absent, real pairs fall back to adjacent-index sampling
-- fake pairs use one image plus a Gaussian-noise duplicate
+- Kaggle CLI installed
+- Kaggle credentials at `~/.kaggle/kaggle.json`
 
-### 6. Run the test suite
+The tests include explicit failure checks for missing Kaggle CLI and missing credentials.
+
+## Train The Branch A Baseline
+
+Run the baseline trainer:
 
 ```bash
-python3 -m unittest discover -s tests -v
+python -m training.train_branch_a --config config/config.yaml --run-name branch_a_baseline
 ```
 
-Notes:
+Useful flags:
 
-- the TensorBoard smoke test is skipped automatically if `tensorboard` is not installed
-- on macOS, setting `PYTHONPYCACHEPREFIX=.pycache_local` can avoid cache-permission issues in some shells
+- `--train-limit`: cap train samples for smoke runs
+- `--val-limit`: cap validation samples for smoke runs
+- `--epochs-override`: override configured epochs
+- `--device cpu|cuda|mps`: force a device
+- `--tracker-backend tensorboard`: emit TensorBoard logs under `runs/<run-name>/tensorboard`
 
-### 7. Launch optical-flow precompute
+Example short smoke run:
 
 ```bash
-PYTHONPATH=. python3 -u data/precompute_flow.py \
+python -m training.train_branch_a \
+  --config config/config.yaml \
+  --run-name smoke \
+  --train-limit 512 \
+  --val-limit 128 \
+  --epochs-override 1 \
+  --device cpu
+```
+
+## Precompute Optical Flow
+
+The flow utility in [data/precompute_flow.py](data/precompute_flow.py) currently supports Farneback flow only.
+
+```bash
+python -m data.precompute_flow \
   --img-dir data/celeba/img_align_celeba \
   --out-dir data/flow_cache \
-  --method farneback
+  --method farneback \
+  --image-size 64
 ```
 
-Each cached file is written as:
+This produces one `*_flow.pt` tensor per image. The current Branch A baseline does not consume these tensors yet; they are groundwork for later branches.
 
-```text
-data/flow_cache/{image_stem}_flow.pt
-```
+## Evaluation And Targets
 
-Each tensor has shape `(2, 64, 64)`.
+The implemented evaluation in [evaluation/metrics.py](evaluation/metrics.py) reports:
 
-### 8. Start TensorBoard logging
+- Balanced accuracy
+- F1 score
+- Loss
 
-The default Week 1 tracking backend is TensorBoard through `training/tracker.py`. Once training scripts exist, logs should be written under:
+The trainer currently uses internal baseline targets:
 
-```text
-runs/
-```
+- Balanced accuracy: `>= 0.77`
+- F1: `>= 0.70`
 
-To inspect them:
+Those targets are for the Week 1 noise-duplicate baseline only. They are not equivalent to a realistic deepfake benchmark.
+
+## Tests
+
+Run the test suite with:
 
 ```bash
-tensorboard --logdir runs
+python -m unittest discover -s tests
 ```
 
-## Reference Document
+Coverage currently includes:
 
-For the full technical specification, milestones, risks, and citations, see [docs/master-plan.md](/docs/master-plan.md).
+- Branch A forward-pass shape checks
+- Metric computation sanity checks
+- Scheduler configuration checks
+- End-to-end training smoke test with checkpoint and report generation
+- Dataset shape, label balance, normalization, and pairing behavior
+- Optical-flow precompute smoke test
+- Import/bootstrap checks
+- TensorBoard tracker smoke test when TensorBoard is installed
+
+## Limitations
+
+- Only Branch A is implemented.
+- Current fake samples are Gaussian-noise duplicates, not actual deepfakes.
+- Out-of-domain evaluation is not implemented.
+- If `identity_CelebA.txt` is missing, real pairs fall back to adjacent-image pairing.
+- The planning docs describe a broader system than the code currently provides.
+
+## Roadmap
+
+The planned next steps are:
+
+1. Implement Branch B temporal features.
+2. Implement Branch C physics-based features from flow and photometrics.
+3. Add fusion training for the multi-branch classifier.
+4. Replace synthetic noise-duplicate negatives with stronger fake-generation sources.
+5. Add out-of-domain evaluation.
