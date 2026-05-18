@@ -12,9 +12,9 @@ The long-term design is documented in [docs/master-plan.md](docs/master-plan.md)
 - Implemented: CelebA dataloader with real/fake pair construction
 - Implemented: offline Farneback optical-flow precompute utility
 - Implemented: metric computation, checkpointing, run summaries, and optional TensorBoard logging
-- Smoke-verified: Branch B regression tests, Branch A freeze tests, and a 1-epoch Phase 2 dry-run
+- Verified: Branch B regression tests, Branch A freeze tests, a 1-epoch Phase 2 dry-run, and a full gate-clearing Phase 2 training run
 - Not implemented yet: Branch C, Phase 3+, and the final fused three-branch discriminator
-- Not completed yet: the full 20-epoch gate-clearing Phase 2 run that must write `checkpoints/phase2_a_b.pt`
+- Completed: `checkpoints/phase2_a_b.pt` with Phase 2 best validation metrics of balanced accuracy `1.0000` and F1 `1.0000`
 
 ## Repository Layout
 
@@ -287,15 +287,15 @@ Coverage currently includes:
 - Current fake samples are Gaussian-noise duplicates, not actual deepfakes.
 - Out-of-domain evaluation is not implemented.
 - If `identity_CelebA.txt` is missing, real pairs fall back to adjacent-image pairing.
-- The full 20-epoch Phase 2 gate-clearing run is still pending.
+- `phase2_a_b.pt` is an in-domain noise-duplicate checkpoint, not a realistic deepfake benchmark.
 - The checked-in `.venv` may be stale; in this workspace `pytest` was not available in the active interpreter.
 
 ## Roadmap
 
 The planned next steps are:
 
-1. Run the full Phase 2 A+B training job and save a gate-clearing `phase2_a_b.pt`.
-2. Implement Branch C physics-based features from flow and photometrics.
-3. Add Phase 3+ fusion training for the multi-branch classifier.
-4. Replace synthetic noise-duplicate negatives with stronger fake-generation sources.
-5. Add out-of-domain evaluation.
+1. Implement Branch C physics-based features from flow and photometrics.
+2. Add Phase 3+ fusion training for the multi-branch classifier.
+3. Replace synthetic noise-duplicate negatives with stronger fake-generation sources.
+4. Add out-of-domain evaluation.
+5. Repair or recreate the local Python environment if exact `pytest` workflow parity is required.
