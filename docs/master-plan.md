@@ -148,6 +148,8 @@ Current status from the repository state:
 - **Week 1 is substantially complete.** The local CelebA tree is present at `data/celeba/img_align_celeba` with **202,599 images**, the Week 1 data pipeline and tests exist, and the Branch A baseline has already produced `checkpoints/phase1_branch_a_best.pt`.
 - **Branch A checkpoint is real and measurable.** `runs/branch_a_baseline/benchmark_summary.json` reports best validation metrics of **1.0000 balanced accuracy** and **1.0000 F1** at epoch **34**, which clears the Week 1 gate.
 - **Known Week 1 limitation remains.** The current local dataset does **not** include `identity_CelebA.txt`, so real pairs still use the documented adjacent-index fallback instead of identity-based pairing during the recorded Branch A run.
+- **Farnebäck cache is already complete on this machine.** Verified on **2026-05-18**: `data/flow_cache` contains **202,599** `*_flow.pt` files with **0 missing / 0 extra** stems against `discover_celeba_images`, sample tensors have shape `(2, 64, 64)` and `float32` dtype, the cache occupies about **7.0 GB**, and `tests.test_data_pipeline.DataPipelineTestCase.test_flow_precompute_smoke` passes.
+- **Week 2 Branch C must preserve the cache contract.** Cached flow filenames are `{frame_a_stem}_flow.pt`, and each tensor is computed against the adjacent-index partner rule used by `data/precompute_flow.py` and the loader's `adjacent_fallback` path. If `identity_CelebA.txt` is introduced before Branch C wiring, either keep Branch C on adjacent-index pairing or regenerate the cache with identity-based partners before training.
 - **Week 2+ work is still open.** There is no implemented Branch B / Branch C stack, no ensemble training, and no completed OOD evaluation workflow in the repository yet.
 
 ### Milestones
@@ -167,7 +169,7 @@ Week 4 — Eval & Hardening (Phase 5)
 - [x] Validate dataset: count images, verify resolution (178×218)
 - [x] Write `CelebAFramePairDataset` with identity-based pair sampling
 - [x] Write unit tests for data loader: shape checks, label balance, no NaN
-- [ ] **Start** Farnebäck optical flow pre-computation (background job, completes mid-week)
+- [x] **Start** Farnebäck optical flow pre-computation (background job, completes mid-week)
 - [x] Set up experiment tracking (TensorBoard or W&B)
 - [x] Write `config.yaml` with all hyperparameters
 - [x] Implement `BranchA_CNN` + `DiscriminatorPhase1`
