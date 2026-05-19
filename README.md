@@ -45,10 +45,11 @@ deepfake_detector/
 │   └── test_model.py
 ├── training/
 │   ├── branch_a_trainer.py
+│   ├── overfit_stop.py
+│   ├── phase2_train.py
 │   ├── phase2_trainer.py
 │   ├── tracker.py
-│   ├── train_branch_a.py
-│   └── phase2_train.py
+│   └── train_branch_a.py
 ├── pyrightconfig.json
 ├── requirements.txt
 └── README.md
