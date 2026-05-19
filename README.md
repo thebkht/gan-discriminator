@@ -12,8 +12,9 @@ The long-term design is documented in [docs/master-plan.md](docs/master-plan.md)
 - Implemented: CelebA dataloader with real/fake pair construction
 - Implemented: validation-loss overfitting stop logic for Branch A and Phase 2
 - Implemented: offline Farneback optical-flow precompute utility
+- Implemented: standalone Branch A test-split confusion-matrix evaluation
 - Implemented: metric computation, checkpointing, run summaries, and optional TensorBoard logging
-- Verified: Branch B regression tests, Branch A freeze tests, data pipeline tests, and overfit-stop unit tests
+- Verified: Branch B regression tests, Branch A freeze tests, data pipeline tests, overfit-stop unit tests, and Branch A evaluation smoke tests
 - Not implemented yet: Branch C, Phase 3+, and the final fused three-branch discriminator
 - Historical checkpoint: `checkpoints/phase2_a_b.pt` was trained on the earlier trivial proxy task and should not be treated as the current baseline
 
@@ -31,6 +32,7 @@ deepfake_detector/
 │   ├── build-plan.md
 │   └── master-plan.md
 ├── evaluation/
+│   ├── branch_a_eval.py
 │   └── metrics.py
 ├── models/
 │   ├── branch_a.py
@@ -45,6 +47,7 @@ deepfake_detector/
 │   └── test_model.py
 ├── training/
 │   ├── branch_a_trainer.py
+│   ├── eval_branch_a.py
 │   ├── overfit_stop.py
 │   ├── phase2_train.py
 │   ├── phase2_trainer.py
@@ -131,6 +134,12 @@ By default, outputs are written to:
 - `runs/<run-name>/benchmark_summary.json`
 - `runs/<run-name>/benchmark_summary.md`
 - `runs/<run-name>/metrics_history.json`
+- `runs/<run-name>/train_batch0.jpg` through `train_batch2.jpg`
+- `runs/<run-name>/val_batch0_labels.jpg` through `val_batch2_labels.jpg`
+- `runs/<run-name>/val_batch0_pred.jpg` through `val_batch2_pred.jpg`
+- `runs/<run-name>/confusion_matrix.png`
+- `runs/<run-name>/confusion_matrix_normalized.png`
+- `runs/<run-name>/results.png`
 
 ## Setup
 
@@ -154,6 +163,7 @@ Dependencies from [requirements.txt](requirements.txt):
 - `tqdm`
 - `tensorboard`
 - `pyyaml`
+- `matplotlib`
 
 ## Download CelebA
 
@@ -203,6 +213,13 @@ The Branch A trainer now stops early if either of these sustained patterns appea
 - validation loss worsens while train loss improves for `5` consecutive epochs
 - after a `3`-epoch warmup, validation loss stays above `0.35` for `3` consecutive epochs while `train_loss < val_loss`
 
+Each Branch A run also saves:
+
+- training preview grids for the first three train batches
+- validation label/prediction preview grids for the first three validation batches
+- `confusion_matrix.png` and `confusion_matrix_normalized.png` from the best validation epoch
+- `results.png` with train loss, validation loss, validation balanced accuracy, and validation F1 curves
+
 ## Train Phase 2 A+B
 
 Run the Phase 2 trainer:
@@ -236,6 +253,15 @@ python3 -m training.phase2_train \
 
 The Phase 2 trainer uses the same overfit trend rule and a Phase 2 loss ceiling of `0.40`.
 
+Each Phase 2 run saves the same preview and plotting artifacts as Branch A:
+
+- `train_batch*.jpg`
+- `val_batch*_labels.jpg`
+- `val_batch*_pred.jpg`
+- `confusion_matrix.png`
+- `confusion_matrix_normalized.png`
+- `results.png`
+
 ## Precompute Optical Flow
 
 The flow utility in [data/precompute_flow.py](data/precompute_flow.py) currently supports Farneback flow only.
@@ -257,6 +283,27 @@ The implemented evaluation in [evaluation/metrics.py](evaluation/metrics.py) rep
 - Balanced accuracy
 - F1 score
 - Loss
+
+The repository also includes a standalone Branch A test evaluator in [training/eval_branch_a.py](training/eval_branch_a.py). It loads a saved Branch A checkpoint, runs the `test` split, and writes:
+
+- `runs/<run-name>/confusion_matrix.json`
+- `runs/<run-name>/confusion_matrix.png`
+- `runs/<run-name>/eval_report.md`
+
+Run it with:
+
+```bash
+python3 -m training.eval_branch_a --config config/config.yaml --run-name branch_a_test_eval
+```
+
+Optional checkpoint override:
+
+```bash
+python3 -m training.eval_branch_a \
+  --config config/config.yaml \
+  --checkpoint checkpoints/phase1_branch_a_best.pt \
+  --run-name branch_a_test_eval
+```
 
 The Week 1 trainer uses baseline targets:
 
@@ -287,7 +334,7 @@ Coverage currently includes:
 - Phase 1 checkpoint load/remap verification for Phase 2
 - Metric computation sanity checks
 - Scheduler configuration checks
-- End-to-end training smoke test with checkpoint and report generation
+- End-to-end training smoke test with checkpoint, preview-image, and plot generation
 - Dataset shape, label balance, normalization, and pairing behavior
 - Optical-flow precompute smoke test
 - Import/bootstrap checks
