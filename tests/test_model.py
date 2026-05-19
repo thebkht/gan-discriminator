@@ -9,9 +9,9 @@ from models import BranchAEncoder, BranchB_Spatiotemporal, DiscriminatorPhase2, 
 from models.branch_b import _scalar_stats
 
 
-# GOLDEN_BRANCH_B is a snapshot of the committed implementation at seed 0 — not a
-# target specification. Regenerate only if the formula intentionally changes.
-GOLDEN_BRANCH_B = torch.tensor(
+# GOLDEN_BRANCH_B_SUMMARY is a snapshot of the committed 8-D summary at seed 0 — not a
+# target specification. Regenerate only if the temporal summary formula intentionally changes.
+GOLDEN_BRANCH_B_SUMMARY = torch.tensor(
     [
         [-208144.46875, 2990590.0, 5215930.0, -0.00867898017168045, 0.12469834089279175, 0.2174881100654602, 2374705.25, 9062243.0],
         [-81864.625, 1095498.625, 1760118.125, -0.009315049275755882, 0.1246524453163147, 0.20027685165405273, 902030.9375, 3383793.25],
@@ -40,19 +40,19 @@ class BranchBModelTestCase(unittest.TestCase):
 
         output = model(frame_a, frame_b)
 
-        self.assertEqual(tuple(output.shape), (4, 8))
+        self.assertEqual(tuple(output.shape), (4, 32))
         self.assertFalse(torch.isnan(output).any())
 
-    def test_branch_b_numerical_regression(self) -> None:
+    def test_branch_b_summary_numerical_regression(self) -> None:
         torch.manual_seed(0)
         model = BranchB_Spatiotemporal()
         model.eval()
         frame_a, frame_b = self._build_fixed_pair()
 
         with torch.no_grad():
-            output = model(frame_a, frame_b)
+            output = model._summary_features(frame_a, frame_b)
 
-        self.assertTrue(torch.allclose(output, GOLDEN_BRANCH_B, rtol=1e-5, atol=1e-4))
+        self.assertTrue(torch.allclose(output, GOLDEN_BRANCH_B_SUMMARY, rtol=1e-5, atol=1e-4))
 
     def test_scalar_stats_dim(self) -> None:
         x = torch.arange(4 * 64, dtype=torch.float32).reshape(4, 64)
@@ -112,4 +112,3 @@ class DiscriminatorPhase2TestCase(unittest.TestCase):
         self.assertFalse(torch.allclose(loaded_parameter, fresh_parameter))
         logits = model(torch.randn(2, 3, 64, 64), torch.randn(2, 3, 64, 64))
         self.assertEqual(tuple(logits.shape), (2,))
-

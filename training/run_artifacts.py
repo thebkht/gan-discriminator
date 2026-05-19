@@ -5,13 +5,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable, Sequence
 
-import matplotlib
 import numpy as np
 from sklearn.metrics import confusion_matrix
 
-matplotlib.use("Agg")
+try:
+    import matplotlib
 
-import matplotlib.pyplot as plt
+    matplotlib.use("Agg")
+
+    import matplotlib.pyplot as plt
+except ModuleNotFoundError:
+    matplotlib = None
+    plt = None
 
 
 def _smooth(values: Sequence[float], window: int = 5) -> np.ndarray:
@@ -32,6 +37,8 @@ def write_confusion_matrix_artifacts(
     logits: np.ndarray,
     class_names: Sequence[str],
 ) -> None:
+    if plt is None:
+        return
     run_path = Path(run_dir)
     probabilities = 1.0 / (1.0 + np.exp(-logits))
     predictions = (probabilities >= 0.5).astype(np.int64)
@@ -57,6 +64,8 @@ def write_confusion_matrix_artifacts(
 
 
 def write_results_plot(run_dir: str | Path, history: Iterable[object]) -> None:
+    if plt is None:
+        return
     run_path = Path(run_dir)
     train_rows = [row for row in history if getattr(row, "split", None) == "train"]
     val_rows = [row for row in history if getattr(row, "split", None) == "val"]
@@ -108,6 +117,8 @@ def _plot_confusion_matrix(
     title: str,
     value_format: str,
 ) -> None:
+    if plt is None:
+        return
     figure, axis = plt.subplots(figsize=(10, 8))
     image = axis.imshow(matrix, cmap="Blues")
     axis.set_title(title, fontsize=18, pad=16)

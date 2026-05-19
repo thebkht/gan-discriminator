@@ -71,6 +71,7 @@ def _build_optimizer(model: DiscriminatorPhase2, phase2_cfg: Dict[str, Any]) -> 
         trainable_params,
         lr=_as_float(phase2_cfg["learning_rate"], context="phase2.learning_rate"),
         betas=betas,
+        weight_decay=_as_float(phase2_cfg.get("weight_decay", 0.0), context="phase2.weight_decay"),
     )
 
 
@@ -110,7 +111,7 @@ def _run_epoch(
     max_batches: Optional[int] = None,
     run_dir: Optional[Path] = None,
     include_predictions: bool = False,
-) -> Dict[str, float]:
+) -> tuple[Dict[str, float], Optional[np.ndarray], Optional[np.ndarray]]:
     is_train = optimizer is not None
     model.train(is_train)
     total_loss = 0.0
@@ -193,9 +194,8 @@ def _run_epoch(
     metrics["duration_seconds"] = time.perf_counter() - start
     metrics["num_batches"] = float(num_batches)
     if include_predictions:
-        metrics["logits"] = logits
-        metrics["labels"] = labels
-    return metrics
+        return metrics, logits, labels
+    return metrics, None, None
 
 
 def _serialize_history(path: Path, history: list[EpochResult]) -> None:
@@ -251,6 +251,7 @@ def _build_summary_payload(
         "hyperparameters": {
             "epochs": int(phase2_cfg["epochs"]),
             "learning_rate": float(phase2_cfg["learning_rate"]),
+            "weight_decay": float(phase2_cfg.get("weight_decay", 0.0)),
             "batch_size": int(config["dataloader"]["batch_size"]),
             "scheduler": str(phase2_cfg["scheduler"]),
             "scheduler_t_max": int(phase2_cfg["scheduler_t_max"]),
@@ -292,6 +293,7 @@ def _write_summary_files(run_dir: Path, payload: Dict[str, Any]) -> None:
                 f"- Epochs: `{payload['hyperparameters']['epochs']}`",
                 f"- Batch size: `{payload['hyperparameters']['batch_size']}`",
                 f"- Learning rate: `{payload['hyperparameters']['learning_rate']}`",
+                f"- Weight decay: `{payload['hyperparameters']['weight_decay']}`",
                 f"- Scheduler: `{payload['hyperparameters']['scheduler']}`",
                 f"- Scheduler T_max: `{payload['hyperparameters']['scheduler_t_max']}`",
                 "",
@@ -443,7 +445,7 @@ def train_phase2(
     )
     try:
         for epoch in range(1, int(phase2_cfg["epochs"]) + 1):
-            train_metrics = _run_epoch(
+            train_metrics, _, _ = _run_epoch(
                 model,
                 train_loader,
                 criterion,
@@ -455,7 +457,7 @@ def train_phase2(
                 max_batches=max_batches,
                 run_dir=run_dir,
             )
-            val_metrics = _run_epoch(
+            val_metrics, val_logits, val_labels = _run_epoch(
                 model,
                 val_loader,
                 criterion,
@@ -508,8 +510,10 @@ def train_phase2(
             if should_replace:
                 best_metrics = val_metrics
                 best_epoch = epoch
-                best_val_logits = np.asarray(val_metrics["logits"]).copy()
-                best_val_labels = np.asarray(val_metrics["labels"]).copy()
+                if val_logits is None or val_labels is None:
+                    raise RuntimeError("Validation predictions were requested but not returned")
+                best_val_logits = val_logits.copy()
+                best_val_labels = val_labels.copy()
                 torch.save(
                     {
                         "phase": 2,

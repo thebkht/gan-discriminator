@@ -1,6 +1,6 @@
 """Branch B spatiotemporal features for Week 2 Phase 2.
 
-Committed 8-D layout per batch row:
+Committed base 8-D layout per batch row:
 - velocity: mean, std, max
 - curvature: mean, std, max
 - acceleration: mean, max
@@ -77,13 +77,20 @@ class EmbedCNN(nn.Module):
 
 
 class BranchB_Spatiotemporal(nn.Module):
-    """Two-frame spatiotemporal summary branch with a committed 8-D output contract."""
+    """Two-frame spatiotemporal summary branch with a 32-D learned output."""
 
     def __init__(self) -> None:
         super().__init__()
+        self.output_dim = 32
         self.embed = EmbedCNN()
+        self.expander = nn.Sequential(
+            nn.Linear(8, 32),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
 
-    def forward(self, frame_a: Tensor, frame_b: Tensor) -> Tensor:
+    def _summary_features(self, frame_a: Tensor, frame_b: Tensor) -> Tensor:
+        """Return the committed 8-D temporal summary before learned expansion."""
+
         e_t = self.embed(frame_a)
         e_t1 = self.embed(frame_b)
 
@@ -97,6 +104,10 @@ class BranchB_Spatiotemporal(nn.Module):
             _scalar_stats(acceleration, ("mean", "max")),
         )
         return torch.cat(list(stats), dim=1)
+
+    def forward(self, frame_a: Tensor, frame_b: Tensor) -> Tensor:
+        summary = self._summary_features(frame_a, frame_b)
+        return self.expander(summary)
 
 
 __all__ = ["BranchB_Spatiotemporal", "EmbedCNN", "_scalar_stats"]

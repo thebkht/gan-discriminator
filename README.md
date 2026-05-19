@@ -72,9 +72,9 @@ Branch A in [models/branch_a.py](models/branch_a.py):
 Branch B and Phase 2 in [models/branch_b.py](models/branch_b.py) and [models/discriminator.py](models/discriminator.py):
 
 - `EmbedCNN`: tied lightweight 4-block CNN per frame, projected to a 64-D embedding
-- `BranchB_Spatiotemporal`: computes committed temporal proxies from `(frame_a, frame_b)`
-- Output layout: 8-D summary `[velocity(mean,std,max), curvature(mean,std,max), acceleration(mean,max)]`
-- `DiscriminatorPhase2`: frozen Branch A encoder on `frame_a` only, concatenated with Branch B's 8-D output, then fused through a `2056 -> 512 -> 128 -> 1` head
+- `BranchB_Spatiotemporal`: computes committed temporal proxies from `(frame_a, frame_b)` and expands the base 8-D summary into a learned 32-D feature
+- Base temporal summary: 8-D `[velocity(mean,std,max), curvature(mean,std,max), acceleration(mean,max)]`
+- `DiscriminatorPhase2`: frozen Branch A encoder on `frame_a` only, concatenated with Branch B's 32-D output, then fused through a `2080 -> 512 -> 128 -> 1` head
 
 The Phase 2 load path reuses only `encoder.*` weights from `checkpoints/phase1_branch_a_best.pt`; the Week 1 classifier head is discarded.
 

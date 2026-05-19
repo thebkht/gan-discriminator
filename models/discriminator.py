@@ -28,7 +28,7 @@ class DiscriminatorPhase2(nn.Module):
         self.branch_a = BranchAEncoder()
         self.branch_b = BranchB_Spatiotemporal()
         self.fusion = nn.Sequential(
-            nn.Linear(2048 + 8, 512),
+            nn.Linear(2048 + self.branch_b.output_dim, 512),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout(dropout),
             nn.Linear(512, 128),
