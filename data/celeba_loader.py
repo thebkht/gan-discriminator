@@ -6,7 +6,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Mapping, NotRequired, Optional, Sequence, Tuple, TypedDict, cast
 
 import torch
 import yaml
@@ -99,6 +99,40 @@ class PairMetadata:
     identity: Optional[int]
 
 
+class FramePairSample(TypedDict):
+    frame_a: torch.Tensor
+    frame_b: torch.Tensor
+    label: torch.Tensor
+    metadata: Dict[str, object]
+
+
+class PathsConfig(TypedDict):
+    image_dir: str
+    identity_file: NotRequired[str]
+
+
+class DatasetConfig(TypedDict, total=False):
+    image_size: int | float
+    fake_ratio: int | float
+    gaussian_noise_std: int | float
+    train_split: int | float
+    val_split: int | float
+    test_split: int | float
+
+
+class DataloaderConfig(TypedDict, total=False):
+    batch_size: int
+    num_workers: int
+    pin_memory: bool
+    drop_last: bool
+
+
+class LoaderConfig(TypedDict):
+    paths: PathsConfig
+    dataset: DatasetConfig
+    dataloader: DataloaderConfig
+
+
 class CelebAFramePairDataset(Dataset):
     """Stable Week 1 contract for real/fake frame-pair sampling.
 
@@ -107,7 +141,8 @@ class CelebAFramePairDataset(Dataset):
     - Without the identity file, fall back to adjacent-index sampling.
 
     Fake pairs:
-    - Duplicate a single image and inject small Gaussian noise into the second tensor.
+    - Pair an anchor image with a frame from a different identity when identity labels exist.
+    - Without the identity file, fall back to a deterministic distant-index pairing.
     """
 
     def __init__(
@@ -127,11 +162,12 @@ class CelebAFramePairDataset(Dataset):
         self.index_by_name = {path.name: idx for idx, path in enumerate(self.image_paths)}
         self.image_size = image_size
         self.fake_ratio = fake_ratio
-        self.gaussian_noise_std = gaussian_noise_std
+        self.gaussian_noise_std = gaussian_noise_std  # retained for API compatibility; unused after cross-identity fake strategy
         self.transform = transform or build_transforms(image_size=image_size, train=train)
         self.identity_file = Path(identity_file) if identity_file else None
         self.identity_lookup: Dict[str, int] = {}
         self.identity_groups: Dict[int, List[int]] = {}
+        self.cross_identity_candidates: Dict[int, List[int]] = {}
         self.has_identity_file = False
         self._fake_fraction = Fraction(str(fake_ratio)).limit_denominator(1000)
         self._load_identity_pairs()
@@ -156,6 +192,12 @@ class CelebAFramePairDataset(Dataset):
 
         self.identity_groups = {identity: sorted(indices) for identity, indices in groups.items()}
         self.has_identity_file = bool(self.identity_lookup)
+        if self.has_identity_file:
+            all_indices = list(range(len(self.image_paths)))
+            self.cross_identity_candidates = {
+                identity: [idx for idx in all_indices if self.identity_lookup.get(self.image_paths[idx].name) != identity]
+                for identity in self.identity_groups
+            }
 
     def _index_for_filename(self, filename: str) -> int:
         return self.index_by_name[filename]
@@ -172,12 +214,14 @@ class CelebAFramePairDataset(Dataset):
 
         if is_fake:
             frame_a = self._load_tensor(anchor_path)
-            frame_b = self._make_fake_pair(frame_a)
+            fake_index, strategy = self._select_cross_identity_index(index)
+            fake_path = self.image_paths[fake_index]
+            frame_b = self._load_tensor(fake_path)
             metadata = PairMetadata(
                 anchor_path=str(anchor_path),
-                pair_path=str(anchor_path),
+                pair_path=str(fake_path),
                 pair_type="fake",
-                pair_strategy="gaussian_noise_duplicate",
+                pair_strategy=strategy,
                 identity=self.identity_lookup.get(anchor_path.name),
             )
             label = 1
@@ -213,9 +257,21 @@ class CelebAFramePairDataset(Dataset):
         with Image.open(image_path) as img:
             return self.transform(img.convert("RGB"))
 
-    def _make_fake_pair(self, anchor: torch.Tensor) -> torch.Tensor:
-        noisy = anchor + torch.randn_like(anchor) * self.gaussian_noise_std
-        return noisy.clamp(-1.0, 1.0)
+    def _select_cross_identity_index(self, index: int) -> Tuple[int, str]:
+        anchor_name = self.image_paths[index].name
+        anchor_identity = self.identity_lookup.get(anchor_name)
+
+        if self.has_identity_file and anchor_identity is not None:
+            candidates = self.cross_identity_candidates.get(anchor_identity, [])
+            if candidates:
+                pick = candidates[index % len(candidates)]
+                return pick, "cross_identity"
+
+        offset = max(1, len(self.image_paths) // 2)
+        pick = (index + offset) % len(self.image_paths)
+        if pick == index and len(self.image_paths) > 1:
+            pick = (index + 1) % len(self.image_paths)
+        return pick, "distant_index_fallback"
 
     def _select_real_pair(self, index: int) -> Tuple[int, Optional[int], str]:
         anchor_name = self.image_paths[index].name
@@ -226,7 +282,10 @@ class CelebAFramePairDataset(Dataset):
                 offset = group.index(index)
                 pair_index = group[(offset + 1) % len(group)]
                 return pair_index, identity_value, "same_identity"
-            return index, identity_value, "identity_singleton"
+            pair_index = min(index + 1, len(self.image_paths) - 1)
+            if pair_index == index:
+                pair_index = max(0, index - 1)
+            return pair_index, identity_value, "identity_singleton_adjacent"
 
         pair_index = min(index + 1, len(self.image_paths) - 1)
         if pair_index == index:
@@ -234,7 +293,7 @@ class CelebAFramePairDataset(Dataset):
         return pair_index, None, "adjacent_fallback"
 
 
-def collate_frame_pair_batch(batch: Sequence[Mapping[str, object]]) -> Dict[str, object]:
+def collate_frame_pair_batch(batch: Sequence[FramePairSample]) -> Dict[str, object]:
     return {
         "frame_a": torch.stack([sample["frame_a"] for sample in batch]),
         "frame_b": torch.stack([sample["frame_b"] for sample in batch]),
@@ -243,12 +302,33 @@ def collate_frame_pair_batch(batch: Sequence[Mapping[str, object]]) -> Dict[str,
     }
 
 
+def _get_float(mapping: Mapping[str, object], key: str, default: float) -> float:
+    value = mapping.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"Expected numeric config value for '{key}', got {type(value).__name__}")
+    return float(value)
+
+
+def _get_int(mapping: Mapping[str, object], key: str) -> int:
+    value = mapping[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"Expected int config value for '{key}', got {type(value).__name__}")
+    return value
+
+
+def _get_bool(mapping: Mapping[str, object], key: str) -> bool:
+    value = mapping[key]
+    if not isinstance(value, bool):
+        raise TypeError(f"Expected bool config value for '{key}', got {type(value).__name__}")
+    return value
+
+
 def _resolve_split_indices(total_size: int, dataset_cfg: Mapping[str, object], split: str) -> range:
     split_names = ("train", "val", "test")
     fractions = {
-        "train": float(dataset_cfg.get("train_split", DEFAULT_SPLIT_FRACTIONS["train"])),
-        "val": float(dataset_cfg.get("val_split", DEFAULT_SPLIT_FRACTIONS["val"])),
-        "test": float(dataset_cfg.get("test_split", DEFAULT_SPLIT_FRACTIONS["test"])),
+        "train": _get_float(dataset_cfg, "train_split", DEFAULT_SPLIT_FRACTIONS["train"]),
+        "val": _get_float(dataset_cfg, "val_split", DEFAULT_SPLIT_FRACTIONS["val"]),
+        "test": _get_float(dataset_cfg, "test_split", DEFAULT_SPLIT_FRACTIONS["test"]),
     }
     total_fraction = sum(fractions.values())
     if abs(total_fraction - 1.0) > 1e-6:
@@ -290,10 +370,11 @@ def create_celeba_dataloader(
 ) -> DataLoader:
     if isinstance(config, (str, Path)):
         config = load_config(config)
+    typed_config = cast(LoaderConfig, config)
 
-    paths = config["paths"]
-    dataset_cfg = config["dataset"]
-    dataloader_cfg = config["dataloader"]
+    paths = typed_config["paths"]
+    dataset_cfg = typed_config["dataset"]
+    dataloader_cfg = typed_config["dataloader"]
     split = split.lower()
     if split not in {"train", "val", "test"}:
         raise ValueError(f"Unsupported split: {split}")
@@ -301,9 +382,9 @@ def create_celeba_dataloader(
     dataset = CelebAFramePairDataset(
         image_dir=paths["image_dir"],
         identity_file=paths.get("identity_file"),
-        image_size=int(dataset_cfg["image_size"]),
-        fake_ratio=float(dataset_cfg["fake_ratio"]),
-        gaussian_noise_std=float(dataset_cfg["gaussian_noise_std"]),
+        image_size=_get_int(dataset_cfg, "image_size"),
+        fake_ratio=_get_float(dataset_cfg, "fake_ratio", 0.5),
+        gaussian_noise_std=_get_float(dataset_cfg, "gaussian_noise_std", 0.05),
         train=(split == "train"),
         limit=limit,
     )
@@ -315,10 +396,10 @@ def create_celeba_dataloader(
 
     return DataLoader(
         dataset,
-        batch_size=int(dataloader_cfg["batch_size"]),
+        batch_size=_get_int(dataloader_cfg, "batch_size"),
         shuffle=shuffle,
-        num_workers=int(dataloader_cfg["num_workers"]),
-        pin_memory=bool(dataloader_cfg["pin_memory"]),
-        drop_last=bool(dataloader_cfg["drop_last"]),
+        num_workers=_get_int(dataloader_cfg, "num_workers"),
+        pin_memory=_get_bool(dataloader_cfg, "pin_memory"),
+        drop_last=_get_bool(dataloader_cfg, "drop_last"),
         collate_fn=collate_frame_pair_batch,
     )

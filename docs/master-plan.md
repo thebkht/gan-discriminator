@@ -147,9 +147,9 @@ Current status from the repository state:
 
 - **Week 1 is substantially complete.** The local CelebA tree is present at `data/celeba/img_align_celeba` with **202,599 images**, the Week 1 data pipeline and tests exist, and the Branch A baseline has already produced `checkpoints/phase1_branch_a_best.pt`.
 - **Branch A checkpoint is real and measurable.** `runs/branch_a_baseline/benchmark_summary.json` reports best validation metrics of **1.0000 balanced accuracy** and **1.0000 F1** at epoch **34**, which clears the Week 1 gate.
-- **Known Week 1 limitation remains.** The current local dataset does **not** include `identity_CelebA.txt`, so real pairs still use the documented adjacent-index fallback instead of identity-based pairing during the recorded Branch A run.
+- **Known checkpoint limitation remains.** The recorded Branch A and Phase 2 runs were produced before the loader switched fake sampling away from noise duplicates, so those metrics are only useful as architecture smoke tests, not meaningful proxy-task scores.
 - **Farnebäck cache is already complete on this machine.** Verified on **2026-05-18**: `data/flow_cache` contains **202,599** `*_flow.pt` files with **0 missing / 0 extra** stems against `discover_celeba_images`, sample tensors have shape `(2, 64, 64)` and `float32` dtype, the cache occupies about **7.0 GB**, and `tests.test_data_pipeline.DataPipelineTestCase.test_flow_precompute_smoke` passes.
-- **Week 2 Branch C must preserve the cache contract.** Cached flow filenames are `{frame_a_stem}_flow.pt`, and each tensor is computed against the adjacent-index partner rule used by `data/precompute_flow.py` and the loader's `adjacent_fallback` path. If `identity_CelebA.txt` is introduced before Branch C wiring, either keep Branch C on adjacent-index pairing or regenerate the cache with identity-based partners before training.
+- **Week 2 Branch C must preserve the cache contract.** Cached flow filenames are `{frame_a_stem}_flow.pt`, and each tensor is computed against the adjacent-index partner rule used by `data/precompute_flow.py`. The loader now uses cross-identity proxy negatives when identity labels are available, so Branch C must either stay on explicit adjacent-index pairing or use a regenerated cache that matches the new pair selection rule before training.
 - **Week 2 Dev 1 code is now in place.** `models/branch_b.py`, `models/discriminator.py`, `training/phase2_trainer.py`, `training/phase2_train.py`, and `tests/test_model.py` now exist. Branch B's 8-D layout and acceleration proxy are locked by a golden regression test, and Phase 2 includes a real Branch A freeze test plus Phase 1 encoder load/remap coverage.
 - **Phase 2 is gate-cleared.** `checkpoints/phase2_a_b.pt` now exists with `phase == 2`; the saved checkpoint reports best validation metrics of **1.0000 balanced accuracy** and **1.0000 F1** at epoch **2**, and `runs/phase2_a_b/benchmark_summary.json` matches those values.
 - **Week 2+ work is still open beyond Dev 1.** Branch C, Phase 3+, ensemble training, and OOD evaluation are still not implemented in the repository.
@@ -175,7 +175,7 @@ Week 4 — Eval & Hardening (Phase 5)
 - [x] Set up experiment tracking (TensorBoard or W&B)
 - [x] Write `config.yaml` with all hyperparameters
 - [x] Implement `BranchA_CNN` + `DiscriminatorPhase1`
-- [x] Train Branch A end-to-end on CelebA real vs. noise-fake
+- [x] Train Branch A end-to-end on CelebA proxy real/fake pairs
 - [x] Target: ≥77% balanced accuracy; save `checkpoints/phase1_branch_a.pt`
 
 ### Week 2 — Branches B & C (parallel)
@@ -328,7 +328,11 @@ Real pair:   two images of the same celebrity identity
              (simulate consecutive frames of authentic video)
 
 Fake pair:   single image + small Gaussian noise duplicate
-             → replace with GAN generator output during full GAN training
+             previous trivial proxy used for the first recorded checkpoints
+
+Current proxy: anchor image + different-identity image when labels exist
+               fallback to distant-index pairing without identity labels
+               → replace with GAN/diffusion outputs during full deepfake training
 ```
 
 ### Augmentations (train only)

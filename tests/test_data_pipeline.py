@@ -125,6 +125,37 @@ class DataPipelineTestCase(unittest.TestCase):
         self.assertTrue(metadata["pair_path"].endswith("000004.jpg"))
         self.assertIsNone(metadata["identity"])
 
+    def test_identity_singleton_falls_back_to_adjacent_pair(self) -> None:
+        self.identity_file.write_text(
+            "\n".join(
+                [
+                    "000001.jpg 1",
+                    "000002.jpg 2",
+                    "000003.jpg 2",
+                    "000004.jpg 3",
+                    "000005.jpg 3",
+                    "000006.jpg 4",
+                    "000007.jpg 4",
+                    "000008.jpg 5",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        dataset = CelebAFramePairDataset(
+            image_dir=self.image_root,
+            identity_file=self.identity_file,
+            image_size=64,
+            fake_ratio=0.0,
+            train=False,
+        )
+        sample = dataset[0]
+        metadata = sample["metadata"]
+        self.assertEqual(metadata["pair_type"], "real")
+        self.assertEqual(metadata["pair_strategy"], "identity_singleton_adjacent")
+        self.assertEqual(metadata["identity"], 1)
+        self.assertTrue(metadata["pair_path"].endswith("000002.jpg"))
+
     def test_augmentation_normalizes_to_expected_range(self) -> None:
         transform = build_transforms(image_size=64, train=True)
         tensor = transform(Image.open(self.image_root / "000001.jpg").convert("RGB"))

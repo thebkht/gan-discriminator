@@ -85,7 +85,8 @@ Real pairs:
 Fake pairs:
 
 - The current baseline does not use GAN-generated or diffusion-generated fakes.
-- Instead, it duplicates one image and injects Gaussian noise into the second frame.
+- With `identity_CelebA.txt` present, it pairs the anchor with a frame from a different identity.
+- If the identity file is missing, it falls back to a deterministic distant-index pair.
 
 Transforms from [data/augmentations.py](data/augmentations.py):
 
@@ -94,7 +95,7 @@ Transforms from [data/augmentations.py](data/augmentations.py):
 - Color jitter during training
 - Normalize tensors to `[-1, 1]`
 
-This means current metrics are only useful as a smoke-tested baseline and are not representative of real deepfake performance.
+This means current metrics are still only useful as a proxy-task baseline and are not representative of real deepfake performance. The shortcut is no longer a zero-motion noise duplicate, but the task is still "same identity vs. different identity", not real forgery detection.
 
 ## Configuration
 
@@ -256,7 +257,7 @@ The Phase 2 trainer uses:
 - Balanced accuracy: `>= 0.88`
 - F1: `>= 0.88`
 
-These are still in-domain noise-duplicate gates, not realistic deepfake benchmarks.
+These are still in-domain proxy-task gates, not realistic deepfake benchmarks.
 
 ## Tests
 
@@ -284,10 +285,11 @@ Coverage currently includes:
 ## Limitations
 
 - Branch C and later ensemble phases are not implemented yet.
-- Current fake samples are Gaussian-noise duplicates, not actual deepfakes.
+- Current fake samples are cross-identity proxy negatives, not actual deepfakes.
 - Out-of-domain evaluation is not implemented.
 - If `identity_CelebA.txt` is missing, real pairs fall back to adjacent-image pairing.
-- `phase2_a_b.pt` is an in-domain noise-duplicate checkpoint, not a realistic deepfake benchmark.
+- If `identity_CelebA.txt` is missing, fake pairs fall back to deterministic distant-index pairing.
+- `phase2_a_b.pt` was trained on the earlier trivial proxy task and is not a realistic deepfake benchmark.
 - The checked-in `.venv` may be stale; in this workspace `pytest` was not available in the active interpreter.
 
 ## Roadmap
@@ -296,6 +298,6 @@ The planned next steps are:
 
 1. Implement Branch C physics-based features from flow and photometrics.
 2. Add Phase 3+ fusion training for the multi-branch classifier.
-3. Replace synthetic noise-duplicate negatives with stronger fake-generation sources.
+3. Replace cross-identity proxy negatives with stronger fake-generation sources.
 4. Add out-of-domain evaluation.
 5. Repair or recreate the local Python environment if exact `pytest` workflow parity is required.
