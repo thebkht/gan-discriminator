@@ -49,12 +49,14 @@ training:
 phase2:
   epochs: 20
   learning_rate: 0.00015
+  backbone_train_last_n: 2
+  backbone_lr_scale: 0.1
   optimizer: adam
   betas:
     - 0.5
     - 0.999
   scheduler: CosineAnnealingLR
-  scheduler_t_max: 20
+  scheduler_t_max: 15
   dropout: 0.4
   weight_decay: 0.0001
   checkpoint_metric: balanced_accuracy
@@ -67,6 +69,8 @@ phase2:
   early_stopping:
     patience_overfit: 5
     patience_ceiling: 3
+    patience_val_metric: 4
+    val_metric: balanced_accuracy
     warmup_epochs: 3
     val_loss_ceiling: 0.40
     enable_loss_ceiling: true

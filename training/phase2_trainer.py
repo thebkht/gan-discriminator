@@ -21,6 +21,7 @@ from torch.utils.data import DataLoader
 from data.celeba_loader import create_celeba_dataloader, load_config
 from evaluation import compute_binary_classification_metrics
 from models import DiscriminatorPhase2, load_pretrained_branch_a
+from models.branch_b import SIGN_CONSISTENCY_IDX
 from training.trainer import (
     _as_float,
     _as_str_key_mapping,
@@ -34,7 +35,12 @@ from training.trainer import (
     _print_progress_header,
 )
 from training.batch_preview import maybe_save_train_preview, maybe_save_val_previews
-from training.overfit_stop import OverfitStopConfig, OverfitStopMonitor
+from training.overfit_stop import (
+    OverfitStopConfig,
+    OverfitStopMonitor,
+    ValMetricEarlyStop,
+    ValMetricStopConfig,
+)
 from training.run_artifacts import write_confusion_matrix_artifacts, write_results_plot
 from training.tracker import Tracker
 
@@ -69,10 +75,25 @@ def _build_optimizer(model: DiscriminatorPhase2, phase2_cfg: Dict[str, Any]) -> 
         _as_float(beta_values[0], context="phase2.betas[0]"),
         _as_float(beta_values[1], context="phase2.betas[1]"),
     )
-    trainable_params = list(model.branch_b.parameters()) + list(model.fusion.parameters())
+    base_lr = _as_float(phase2_cfg["learning_rate"], context="phase2.learning_rate")
+    tail_lr = base_lr * _as_float(
+        phase2_cfg.get("backbone_lr_scale", 0.1),
+        context="phase2.backbone_lr_scale",
+    )
+    train_last_n = int(phase2_cfg.get("backbone_train_last_n", 0))
+    param_groups: list[dict[str, Any]] = [
+        {"params": list(model.branch_b.expander.parameters()), "lr": base_lr},
+        {"params": list(model.fusion.parameters()), "lr": base_lr},
+    ]
+    if train_last_n > 0:
+        start_index = len(model.branch_a.features) - train_last_n
+        for block_index in range(start_index, len(model.branch_a.features)):
+            param_groups.append(
+                {"params": list(model.branch_a.features[block_index].parameters()), "lr": tail_lr}
+            )
     return Adam(
-        trainable_params,
-        lr=_as_float(phase2_cfg["learning_rate"], context="phase2.learning_rate"),
+        param_groups,
+        lr=base_lr,
         betas=betas,
         weight_decay=_as_float(phase2_cfg.get("weight_decay", 0.0), context="phase2.weight_decay"),
     )
@@ -102,6 +123,64 @@ def _resolve_early_stopping(phase2_cfg: Dict[str, Any]) -> OverfitStopConfig:
     )
 
 
+def _resolve_val_metric_early_stopping(phase2_cfg: Dict[str, Any]) -> ValMetricStopConfig:
+    raw = phase2_cfg.get("early_stopping")
+    if raw is None:
+        return ValMetricStopConfig()
+    early_cfg = _as_str_key_mapping(raw, context="phase2.early_stopping")
+    return ValMetricStopConfig(
+        metric_name=str(early_cfg.get("val_metric", "balanced_accuracy")),
+        patience=int(early_cfg.get("patience_val_metric", 4)),
+        warmup_epochs=int(early_cfg.get("warmup_epochs", 3)),
+    )
+
+
+def _branch_a_batch_norm(model: DiscriminatorPhase2, block_index: int) -> nn.BatchNorm2d:
+    block = cast(nn.Sequential, model.branch_a.features[block_index])
+    batch_norm = block[1]
+    if not isinstance(batch_norm, nn.BatchNorm2d):
+        raise TypeError(f"Expected BatchNorm2d in branch_a.features[{block_index}][1]")
+    return batch_norm
+
+
+def _snapshot_bn_stats(model: DiscriminatorPhase2) -> dict[str, torch.Tensor]:
+    frozen_bn = _branch_a_batch_norm(model, 1)
+    tail_bn = _branch_a_batch_norm(model, 3)
+    if frozen_bn.running_mean is None or frozen_bn.running_var is None:
+        raise RuntimeError("Frozen Branch A batch norm buffers are not initialized")
+    if tail_bn.running_mean is None or tail_bn.running_var is None:
+        raise RuntimeError("Tail Branch A batch norm buffers are not initialized")
+    return {
+        "frozen_mean": frozen_bn.running_mean.detach().clone(),
+        "frozen_var": frozen_bn.running_var.detach().clone(),
+        "tail_mean": tail_bn.running_mean.detach().clone(),
+        "tail_var": tail_bn.running_var.detach().clone(),
+    }
+
+
+def _print_bn_drift(model: DiscriminatorPhase2, baseline: dict[str, torch.Tensor]) -> None:
+    frozen_bn = _branch_a_batch_norm(model, 1)
+    tail_bn = _branch_a_batch_norm(model, 3)
+    if frozen_bn.running_mean is None or frozen_bn.running_var is None:
+        raise RuntimeError("Frozen Branch A batch norm buffers are not initialized")
+    if tail_bn.running_mean is None or tail_bn.running_var is None:
+        raise RuntimeError("Tail Branch A batch norm buffers are not initialized")
+    frozen_mean_delta = (frozen_bn.running_mean - baseline["frozen_mean"]).abs().max().item()
+    frozen_var_delta = (frozen_bn.running_var - baseline["frozen_var"]).abs().max().item()
+    tail_mean_delta = (tail_bn.running_mean - baseline["tail_mean"]).abs().max().item()
+    tail_var_delta = (tail_bn.running_var - baseline["tail_var"]).abs().max().item()
+    print(
+        (
+            "BN drift after epoch 1 "
+            f"frozen_mean_max={frozen_mean_delta:.6f} "
+            f"frozen_var_max={frozen_var_delta:.6f} "
+            f"tail_mean_max={tail_mean_delta:.6f} "
+            f"tail_var_max={tail_var_delta:.6f}"
+        ),
+        flush=True,
+    )
+
+
 def _run_epoch(
     model: nn.Module,
     dataloader: DataLoader,
@@ -114,6 +193,9 @@ def _run_epoch(
     max_batches: Optional[int] = None,
     run_dir: Optional[Path] = None,
     include_predictions: bool = False,
+    diagnostics_model: Optional[DiscriminatorPhase2] = None,
+    emit_branch_b_diagnostics: bool = False,
+    branch_b_diagnostic_batches: int = 1,
 ) -> tuple[Dict[str, float], Optional[np.ndarray], Optional[np.ndarray]]:
     is_train = optimizer is not None
     model.train(is_train)
@@ -143,6 +225,34 @@ def _run_epoch(
             if is_train:
                 loss.backward()
                 optimizer.step()
+
+        if (
+            emit_branch_b_diagnostics
+            and batch_index <= branch_b_diagnostic_batches
+            and diagnostics_model is not None
+        ):
+            with torch.no_grad():
+                summary = diagnostics_model.branch_b._summary_features(frame_a, frame_b)
+                feat_b = diagnostics_model.branch_b(frame_a, frame_b)
+            sign_std = summary[:, SIGN_CONSISTENCY_IDX].std(unbiased=False).item()
+            feat_std = feat_b.std(unbiased=False).item()
+            print(
+                (
+                    f"Branch B batch={batch_index} feat_b mean={feat_b.mean().item():.4f} std={feat_std:.4f} "
+                    f"sign_consistency_std={sign_std:.4f}"
+                ),
+                flush=True,
+            )
+            if feat_std < 0.01:
+                print(
+                    "Warning: Branch B feature std is below 0.01 on the first train batch.",
+                    flush=True,
+                )
+            if sign_std < 1e-4:
+                print(
+                    "Warning: sign_consistency appears nearly constant on the first train batch.",
+                    flush=True,
+                )
 
         if run_dir is not None:
             preview_batch_index = batch_index - 1
@@ -275,7 +385,7 @@ def _build_summary_payload(
             "checkpoint_metric": str(phase2_cfg["checkpoint_metric"]),
         },
         "limitations": [
-            "Branch A is frozen from the Phase 1 checkpoint and only consumes frame_a.",
+            "Branch A's early blocks remain frozen while only the shared encoder tail is finetuned through Branch B.",
             "Fake pairs are cross-identity proxy negatives or distant-index fallbacks, not actual deepfakes.",
             "This benchmark is still a proxy task and likely optimistic relative to real deepfake detection.",
             "No out-of-domain benchmark is included in Week 2.",
@@ -416,7 +526,10 @@ def train_phase2(
     _set_seed(int(phase2_cfg["seed"]))
 
     device = _resolve_device(device_override)
-    model = DiscriminatorPhase2(dropout=float(phase2_cfg["dropout"]))
+    model = DiscriminatorPhase2(
+        dropout=float(phase2_cfg["dropout"]),
+        backbone_train_last_n=int(phase2_cfg.get("backbone_train_last_n", 0)),
+    )
 
     paths_cfg = _as_str_key_mapping(config["paths"], context="config.paths")
     pretrained_path = Path(str(paths_cfg["checkpoints_dir"])) / str(phase2_cfg["pretrained_branch_a"])
@@ -453,6 +566,8 @@ def train_phase2(
     stop_reason: Optional[str] = None
     completed_epochs = 0
     overfit_monitor = OverfitStopMonitor(_resolve_early_stopping(phase2_cfg))
+    val_metric_monitor = ValMetricEarlyStop(_resolve_val_metric_early_stopping(phase2_cfg))
+    bn_epoch1_baseline = _snapshot_bn_stats(model)
     _print_run_header(
         run_name=run_name,
         device=device,
@@ -473,6 +588,9 @@ def train_phase2(
                 split_name="train",
                 max_batches=max_batches,
                 run_dir=run_dir,
+                diagnostics_model=model,
+                emit_branch_b_diagnostics=epoch == 1,
+                branch_b_diagnostic_batches=5,
             )
             val_metrics, val_logits, val_labels = _run_epoch(
                 model,
@@ -558,13 +676,26 @@ def train_phase2(
                 best_metrics=cast(Dict[str, float], best_metrics),
             )
             completed_epochs = epoch
+            if epoch == 1:
+                _print_bn_drift(model, bn_epoch1_baseline)
             stop_decision = overfit_monitor.update(
                 epoch=epoch,
                 train_loss=train_metrics["loss"],
                 val_loss=val_metrics["loss"],
             )
+            metric_name = val_metric_monitor.config.metric_name
+            if metric_name not in val_metrics:
+                raise KeyError(f"Validation metrics do not contain '{metric_name}'")
+            metric_stop_decision = val_metric_monitor.update(
+                epoch=epoch,
+                metric_value=float(val_metrics[metric_name]),
+            )
             if stop_decision.should_stop:
                 stop_reason = stop_decision.reason
+                print(stop_reason, flush=True)
+                break
+            if metric_stop_decision.should_stop:
+                stop_reason = metric_stop_decision.reason
                 print(stop_reason, flush=True)
                 break
     finally:

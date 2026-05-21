@@ -22,6 +22,21 @@ class OverfitStopDecision:
     ceiling_streak: int
 
 
+@dataclass(frozen=True)
+class ValMetricStopConfig:
+    metric_name: str = "balanced_accuracy"
+    patience: int = 4
+    warmup_epochs: int = 3
+
+
+@dataclass(frozen=True)
+class ValMetricStopDecision:
+    should_stop: bool
+    reason: str | None
+    best_value: float
+    stale_streak: int
+
+
 class OverfitStopMonitor:
     """Track train/val loss trends and emit a stop decision when overfitting persists."""
 
@@ -74,4 +89,44 @@ class OverfitStopMonitor:
             reason=reason,
             overfit_streak=self._overfit_streak,
             ceiling_streak=self._ceiling_streak,
+        )
+
+
+class ValMetricEarlyStop:
+    """Stop when a validation metric fails to improve after the warmup period."""
+
+    def __init__(self, config: ValMetricStopConfig) -> None:
+        self.config = config
+        self._best_value = float("-inf")
+        self._stale_streak = 0
+
+    def update(self, *, epoch: int, metric_value: float) -> ValMetricStopDecision:
+        if epoch <= self.config.warmup_epochs:
+            if metric_value > self._best_value:
+                self._best_value = metric_value
+            return ValMetricStopDecision(
+                should_stop=False,
+                reason=None,
+                best_value=self._best_value,
+                stale_streak=0,
+            )
+
+        if metric_value > self._best_value:
+            self._best_value = metric_value
+            self._stale_streak = 0
+        else:
+            self._stale_streak += 1
+
+        reason: str | None = None
+        if self._stale_streak >= self.config.patience:
+            reason = (
+                f"Stopped early: validation {self.config.metric_name} did not improve for "
+                f"{self._stale_streak} consecutive epochs after warmup."
+            )
+
+        return ValMetricStopDecision(
+            should_stop=reason is not None,
+            reason=reason,
+            best_value=self._best_value,
+            stale_streak=self._stale_streak,
         )

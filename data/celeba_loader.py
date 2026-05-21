@@ -6,7 +6,12 @@ from collections import defaultdict
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import Callable, Dict, List, Mapping, NotRequired, Optional, Sequence, Tuple, TypedDict, cast
+from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple, TypedDict, cast
+
+try:
+    from typing import NotRequired
+except ImportError:
+    from typing_extensions import NotRequired
 
 import torch
 import yaml
