@@ -2,6 +2,8 @@
 
 > Deepfake Face Detection · Based on Barrington & Farid, CVPR Workshop 2026  
 > Dataset: CelebA (202,599 images) via Kaggle `jessicali9530/celeba-dataset`
+>
+> Doc basis: refreshed on 2026-05-22 from the project proposal
 
 ---
 
@@ -39,6 +41,14 @@ A **hybrid three-branch discriminator** that captures orthogonal signals:
 | C — Physics Dynamics | Optical flow + HSV photometrics        | Catches skin flicker, implausible flow, color temperature shifts |
 
 **Key result from proposal:** B + C ensemble → **94.4% balanced accuracy, F1 = 0.93** (vs. 52% baseline on OOD content).
+
+### Repository reality check
+
+The proposal is the target design, not the current implementation state.
+
+- Implemented now: Branch A baseline, Branch B temporal summary branch, Phase 2 A+B training path, CelebA pair loader, and offline flow precompute
+- Not implemented now: Branch C, Phase 3 / Phase 4 training, Hinge-loss fine-tuning, random-forest ensemble experiments, and OOD evaluation
+- Important delta: the current Phase 2 code expands Branch B's proposal-level `8-D` summary into a learned `32-D` feature before fusion, so the implemented A+B head is `2048 + 32 = 2080`, not the proposal's final `2084-D` three-branch fusion
 
 ---
 
@@ -109,7 +119,9 @@ frame_t1 ──► Embed CNN ──► e_t1 (64-D)
                                 │
             Summary stats (mean, std, max) × 3 quantities
                                 │
-                             8-D output
+                         Proposal: 8-D output
+                         Current repo: 8-D summary
+                         expanded to learned 32-D
 ```
 
 **What it catches:** Lip-sync deepfakes, expression swaps, discontinuous feature trajectories.
@@ -137,11 +149,24 @@ Total  →  28-D
 | Linear 2 | 512 → 128  | LeakyReLU(0.2)                   |
 | Linear 3 | 128 → 1    | — (logits; sigmoid at inference) |
 
+### 2.6 Phase-by-phase tensor contracts
+
+This section keeps the proposal contract and the current code path separate.
+
+| Stage | Tensor contract | Status |
+| ----- | --------------- | ------ |
+| Proposal Branch A encoder | `2048-D` per frame | Implemented |
+| Proposal Branch B summary | `8-D` per frame pair | Implemented as an intermediate summary |
+| Current Phase 2 Branch B output | `32-D` learned expansion of the 8-D summary | Implemented |
+| Proposal Branch C output | `28-D` per frame pair | Not implemented |
+| Proposal final fusion | `2048 + 8 + 28 = 2084-D` | Not implemented |
+| Current Phase 2 fusion | `2048 + 32 = 2080-D` | Implemented |
+
 ---
 
 ## 3. Build Plan
 
-### Project Checkpoint — 2026-05-18
+### Project Checkpoint — 2026-05-22
 
 Current status from the repository state:
 
@@ -150,10 +175,10 @@ Current status from the repository state:
 - **Known checkpoint limitation remains.** The recorded Branch A and Phase 2 runs were produced before the loader switched fake sampling away from noise duplicates, so those metrics are only useful as architecture smoke tests, not meaningful proxy-task scores.
 - **Farnebäck cache is already complete on this machine.** Verified on **2026-05-18**: `data/flow_cache` contains **202,599** `*_flow.pt` files with **0 missing / 0 extra** stems against `discover_celeba_images`, sample tensors have shape `(2, 64, 64)` and `float32` dtype, the cache occupies about **7.0 GB**, and `tests.test_data.DataPipelineTestCase.test_flow_precompute_smoke` passes.
 - **Week 2 Branch C must preserve the cache contract.** Cached flow filenames are `{frame_a_stem}_flow.pt`, and each tensor is computed against the adjacent-index partner rule used by `data/precompute_flow.py`. The loader now uses cross-identity proxy negatives when identity labels are available, so Branch C must either stay on explicit adjacent-index pairing or use a regenerated cache that matches the new pair selection rule before training.
-- **Week 2 Dev 1 code is now in place.** `models/branch_b.py`, `models/discriminator.py`, `training/phase2_trainer.py`, `training/phase2_train.py`, and `tests/test_model.py` now exist. Branch B's 8-D layout and acceleration proxy are locked by a golden regression test, and Phase 2 includes a real Branch A freeze test plus Phase 1 encoder load/remap coverage.
+- **Week 2 Dev 1 code is now in place.** `models/branch_b.py`, `models/discriminator.py`, `training/phase2_trainer.py`, `training/phase2_train.py`, and `tests/test_model.py` now exist. Branch B's proposal-level 8-D layout and acceleration proxy are locked by a golden regression test, and the current implementation expands that summary to a learned 32-D feature before Phase 2 fusion. Phase 2 also includes a real Branch A freeze test plus Phase 1 encoder load/remap coverage.
 - **Current training runs now use guarded stopping.** Branch A and Phase 2 trainers stop early when validation loss shows sustained overfitting, and each phase also has a branch-specific validation-loss ceiling after warmup.
 - **Phase 2 is gate-cleared.** `checkpoints/phase2_a_b.pt` now exists with `phase == 2`; the saved checkpoint reports best validation metrics of **1.0000 balanced accuracy** and **1.0000 F1** at epoch **2**, and `runs/phase2_a_b/benchmark_summary.json` matches those values.
-- **Week 2+ work is still open beyond Dev 1.** Branch C, Phase 3+, ensemble training, and OOD evaluation are still not implemented in the repository.
+- **Week 2+ work is still open beyond Dev 1.** Branch C, Phase 3+, ensemble training, and OOD evaluation are still not implemented in the repository. The remaining open architectural decision is whether later phases should preserve the current learned 32-D Branch B expansion or collapse back to the proposal's direct 8-D fusion contract.
 
 ### Milestones
 
@@ -328,8 +353,8 @@ deepfake_detector/
 Real pair:   two images of the same celebrity identity
              (simulate consecutive frames of authentic video)
 
-Fake pair:   single image + small Gaussian noise duplicate
-             previous trivial proxy used for the first recorded checkpoints
+Legacy proxy: single image + small Gaussian noise duplicate
+              used by earlier historical checkpoints only
 
 Current proxy: anchor image + different-identity image when labels exist
                fallback to distant-index pairing without identity labels
@@ -378,12 +403,12 @@ Training all branches simultaneously from scratch leads to unstable gradients an
 
 ### Phase Summary
 
-| Phase | Trainable Parameters | Frozen        | Target Metric        |
-| ----- | -------------------- | ------------- | -------------------- |
-| 1     | Branch A + FC        | —             | Acc ≥ 77%, F1 ≥ 0.70 |
-| 2     | Branch B + FC        | Branch A conv | Acc ≥ 88%, F1 ≥ 0.88 |
-| 3     | Branch C + FC        | Branch A, B   | Acc ≥ 83%, F1 ≥ 0.80 |
-| 4     | All (low LR)         | —             | Acc ≥ 94%, F1 ≥ 0.93 |
+| Phase | Trainable Parameters | Frozen | Target Metric |
+| ----- | -------------------- | ------ | ------------- |
+| 1 | Branch A baseline + FC | — | Acc ≥ 77%, F1 ≥ 0.70 |
+| 2 | Branch B + A+B fusion head | Branch A encoder | Acc ≥ 88%, F1 ≥ 0.88 |
+| 3 | Branch C + A+B+C fusion head | Branch A, B | Acc ≥ 83%, F1 ≥ 0.80 |
+| 4 | Full fused model or ensemble stack | — | Acc ≥ 94%, F1 ≥ 0.93 |
 
 ---
 
@@ -429,7 +454,7 @@ L_total = α · L_BCE + (1 − α) · L_hinge      α = 0.7
 For the B+C ensemble (recommended per proposal):
 
 1. Train Branch B and Branch C independently to convergence
-2. Extract their output logits as features
+2. Extract their output logits or summary outputs as features
 3. Fit a **Random Forest classifier** on [B_logit, C_logit] → real/fake
 4. Optionally stack with Branch A logit for the full A+B+C ensemble
 
@@ -455,7 +480,7 @@ To validate OOD robustness, evaluate on:
 | **B + C ensemble**               | **94.4%**   | **94.4%**   | **0.93** | ⭐ Recommended       |
 | A + B + C full ensemble          | 89.5%       | 89.5%       | 0.86     | Note: lower than B+C |
 
-> **Insight:** The full A+B+C ensemble underperforms B+C because Branch A introduces in-distribution bias that dilutes the OOD robustness of the physics+temporal signal. B+C is the deployment-recommended configuration.
+> **Insight from the proposal:** the full A+B+C ensemble underperforms B+C because Branch A introduces in-distribution bias that dilutes the OOD robustness of the physics+temporal signal. B+C is therefore the deployment-recommended configuration in the proposal, pending reproduction in this repository.
 
 ---
 

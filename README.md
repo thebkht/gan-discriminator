@@ -1,13 +1,13 @@
 # Hybrid Three-Branch Deepfake Detector
 
-This repository contains the in-progress implementation of a deepfake face detection project built around a three-branch discriminator. The current codebase includes the full Week 1 baseline and the Week 2 Dev 1 Branch B / Phase 2 stack: a working Branch A spatial model, a working Branch B spatiotemporal branch, a frozen-Branch-A Phase 2 discriminator, the CelebA pair dataset pipeline, an optical-flow precompute utility, and tests for the current model and training paths.
+This repository tracks an in-progress deepfake face detection project based on the project proposal: a hybrid discriminator that combines spatial CNN features, spatiotemporal embedding derivatives, and physics-based dynamics.
 
-The long-term design is documented in [docs/master-plan.md](docs/master-plan.md), but the repository is not at full three-branch parity yet. The `README` below describes what is implemented now.
+The codebase is not at full proposal parity yet. Today it includes the completed Branch A baseline, the current Branch B / Phase 2 stack, the CelebA pair dataset pipeline, the optical-flow precompute utility, and tests around the implemented training path. The docs below distinguish between the proposal target and the code that exists now.
 
 ## Current Status
 
-- Implemented: Branch A baseline training on paired CelebA images
-- Implemented: Branch B spatiotemporal features and `DiscriminatorPhase2`
+- Implemented: Branch A spatial encoder and paired-frame baseline classifier
+- Implemented: Branch B spatiotemporal summary branch and `DiscriminatorPhase2`
 - Implemented: Phase 2 A+B trainer CLI and checkpoint/report writing
 - Implemented: CelebA dataloader with real/fake pair construction
 - Implemented: validation-loss overfitting stop logic for Branch A and Phase 2
@@ -15,7 +15,7 @@ The long-term design is documented in [docs/master-plan.md](docs/master-plan.md)
 - Implemented: standalone Branch A test-split confusion-matrix evaluation
 - Implemented: metric computation, checkpointing, run summaries, and optional TensorBoard logging
 - Verified: Branch B regression tests, Branch A freeze tests, data pipeline tests, overfit-stop unit tests, and Branch A evaluation smoke tests
-- Not implemented yet: Branch C, Phase 3+, and the final fused three-branch discriminator
+- Not implemented yet: Branch C, Phase 3+, Hinge-loss fine-tuning, and the final fused three-branch discriminator from the proposal
 - Historical checkpoint: `checkpoints/phase2_a_b.pt` was trained on the earlier trivial proxy task and should not be treated as the current baseline
 
 ## Repository Layout
@@ -58,25 +58,41 @@ deepfake_detector/
 └── README.md
 ```
 
-## Implemented Models
+## Architecture
 
-The current codebase includes two model stages.
+### Proposal target
 
-Branch A in [models/branch_a.py](models/branch_a.py):
+The proposal defines a three-branch discriminator over consecutive `64 x 64` RGB face frames:
 
-- Input: two `64 x 64` RGB face frames
-- Encoder: five convolution blocks with spectral normalization and LeakyReLU
-- Classifier: concatenated twin-frame features passed through an MLP
-- Output: one real/fake logit for the frame pair
+- Branch A: spatial CNN encoder, `2048-D`
+- Branch B: spatiotemporal derivative summary, `8-D`
+- Branch C: optical-flow + photometric dynamics, `28-D`
+- Final fusion head: concatenated `2084-D -> 512 -> 128 -> 1`
 
-Branch B and Phase 2 in [models/branch_b.py](models/branch_b.py) and [models/discriminator.py](models/discriminator.py):
+The intended training order is:
 
-- `EmbedCNN`: tied lightweight 4-block CNN per frame, projected to a 64-D embedding
-- `BranchB_Spatiotemporal`: computes committed temporal proxies from `(frame_a, frame_b)` and expands the base 8-D summary into a learned 32-D feature
-- Base temporal summary: 8-D `[velocity(mean,std,max), curvature(mean,std,max), acceleration(mean,max)]`
-- `DiscriminatorPhase2`: frozen Branch A encoder on `frame_a` only, concatenated with Branch B's 32-D output, then fused through a `2080 -> 512 -> 128 -> 1` head
+1. Train Branch A end-to-end.
+2. Add Branch B with Branch A frozen.
+3. Add Branch C with earlier branches frozen.
+4. Fine-tune the fused model and evaluate branch ensembles, with B+C treated as the strongest OOD-oriented configuration in the proposal.
 
-The Phase 2 load path reuses only `encoder.*` weights from `checkpoints/phase1_branch_a_best.pt`; the Week 1 classifier head is discarded.
+### Current implementation
+
+The repository currently implements Branch A and the A+B Phase 2 stack.
+
+Branch A in [models/branch_a.py](/Users/thebkht/Sejong Uni/Pattern Regocnition/deepfake_detector/models/branch_a.py):
+
+- `BranchAEncoder`: five convolution blocks with spectral normalization and LeakyReLU, outputting a `2048-D` feature from one frame
+- `BranchABaseline`: applies the encoder to both frames and classifies the concatenated `4096-D` pair representation
+
+Branch B and Phase 2 in [models/branch_b.py](/Users/thebkht/Sejong Uni/Pattern Regocnition/deepfake_detector/models/branch_b.py) and [models/discriminator.py](/Users/thebkht/Sejong Uni/Pattern Regocnition/deepfake_detector/models/discriminator.py):
+
+- `EmbedCNN`: tied lightweight 4-block CNN per frame, projected to a `64-D` embedding
+- Committed temporal summary: `8-D` `[velocity(mean,std,max), curvature(mean,std,max), acceleration(mean,max)]`
+- Current implementation detail: that `8-D` summary is expanded to a learned `32-D` feature before fusion
+- `DiscriminatorPhase2`: frozen Branch A encoder on `frame_a`, concatenated with Branch B's `32-D` output, then fused through a `2080 -> 512 -> 128 -> 1` head
+
+This means the current code is aligned with the proposal directionally, but it is not yet the proposal's final `2048 + 8 + 28 = 2084` fused discriminator.
 
 ## Dataset Pipeline
 
@@ -100,7 +116,7 @@ Transforms from [data/augmentations.py](data/augmentations.py):
 - Color jitter during training
 - Normalize tensors to `[-1, 1]`
 
-This means current metrics are still only useful as a proxy-task baseline and are not representative of real deepfake performance. The shortcut is no longer a zero-motion noise duplicate, but the task is still "same identity vs. different identity", not real forgery detection.
+This means current metrics are still only useful as a proxy-task baseline and are not representative of real deepfake performance. The task is still "same identity vs. different identity", not detection over real generative manipulations or OOD deepfakes.
 
 ## Configuration
 
@@ -278,7 +294,7 @@ python3 -m data.precompute_flow \
   --image-size 64
 ```
 
-This produces one `*_flow.pt` tensor per image. The current Branch A baseline does not consume these tensors yet; they are groundwork for later branches.
+This produces one `*_flow.pt` tensor per image. These tensors are the intended input substrate for the proposal's Branch C, which is not implemented yet.
 
 ## Evaluation And Targets
 
@@ -319,7 +335,7 @@ The Phase 2 trainer uses:
 - Balanced accuracy: `>= 0.88`
 - F1: `>= 0.88`
 
-These are still in-domain proxy-task gates, not realistic deepfake benchmarks. Older checked-in checkpoints that report `1.0000` metrics were trained before the cross-identity proxy transition.
+These are still in-domain proxy-task gates, not realistic deepfake benchmarks. The proposal's headline `94.4%` balanced-accuracy result refers to the recommended B+C ensemble on difficult OOD content, which this repository does not implement yet.
 
 ## Tests
 
@@ -360,7 +376,7 @@ Coverage currently includes:
 The planned next steps are:
 
 1. Implement Branch C physics-based features from flow and photometrics.
-2. Add Phase 3+ fusion training for the multi-branch classifier.
-3. Replace cross-identity proxy negatives with stronger fake-generation sources.
-4. Add out-of-domain evaluation.
-5. Repair or recreate the local Python environment if exact `pytest` workflow parity is required.
+2. Add Phase 3 and Phase 4 training to reach the proposal's three-branch fused model.
+3. Decide whether Branch B should stay at the current learned `32-D` expansion or be reduced back to the proposal's direct `8-D` fusion contract.
+4. Replace cross-identity proxy negatives with stronger fake-generation sources.
+5. Add out-of-domain evaluation and branch-combination experiments, especially the proposal's recommended B+C ensemble.

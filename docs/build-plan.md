@@ -1,7 +1,7 @@
 # Hybrid Three-Branch GAN Discriminator — Build Plan
 
-> Last updated: 2026-05-18
-> Status: **Week 1 — code complete, baseline refresh in progress** (flow cache verified; eval module skeleton in place; stronger proxy-task rerun underway). **Week 2 — in progress** (Branch B and Branch C implementations open; flow loader update open).
+> Last updated: 2026-05-22
+> Status: **Week 1 and current Phase 2 code paths are implemented.** The repository now matches the proposal at the Branch A level and partially at the Branch B level. **Week 2+ remains in progress** because Branch C, Phase 3+, Hinge-loss fine-tuning, ensemble experiments, and OOD evaluation are still open.
 
 > **2 Engineers · 4 Weeks · OOD Robustness Target: 94.4% balanced accuracy**
 
@@ -22,8 +22,8 @@
 
 | Phase | Where the repo is now | Next gate |
 | ----- | --------------------- | --------- |
-| 1 | CelebA at `data/celeba/img_align_celeba` (202,599 images); `BranchA_CNN` + `DiscriminatorPhase1` implemented; flow cache complete at `data/flow_cache` (202,599 `*_flow.pt` files, ~7.0 GB, shape `(2, 64, 64)` float32); `test_flow_precompute_smoke` passing; eval module skeleton in place; loader now supports same-identity real pairs, cross-identity proxy fakes, singleton-adjacent fallback, and attribute-derived pseudo-identities when true identity labels are unavailable | Finish the new Phase 1 run on the harder proxy task, then update the saved baseline checkpoint/report |
-| 2 | Branch B (`models/branch_b.py`) and the full Phase 2 A+B stack are implemented; golden regression and Branch A freeze/load tests were added in `tests/test_model.py`; the trainers now include validation-loss-based overfit stopping (trend rule + branch-specific ceilings); a standalone Branch A test-split confusion-matrix evaluator is available; the old `phase2_a_b.pt` checkpoint still reflects the earlier trivial proxy task; Branch C, Hinge loss, and checkpoint resume remain open | Retrain Phase 2 from the stronger Phase 1 checkpoint, generate the refreshed Branch A test confusion matrix, then continue Branch C / Phase 3 work |
+| 1 | CelebA at `data/celeba/img_align_celeba` (202,599 images); Branch A encoder and baseline classifier implemented; flow cache complete at `data/flow_cache` (202,599 `*_flow.pt` files, ~7.0 GB, shape `(2, 64, 64)` float32); `test_flow_precompute_smoke` passing; loader supports same-identity real pairs, cross-identity proxy fakes, singleton-adjacent fallback, and attribute-derived pseudo-identities when true identity labels are unavailable | Keep the saved Branch A baseline and reports aligned with the stronger proxy-task configuration |
+| 2 | Branch B (`models/branch_b.py`) and the full Phase 2 A+B stack are implemented; the committed Branch B summary matches the proposal's 8-D temporal layout, but the current code expands it to a learned 32-D feature before fusion; golden regression and Branch A freeze/load tests exist in `tests/test_model.py`; Branch C, Hinge loss, checkpoint resume, and OOD evaluation remain open | Decide whether later phases keep the 32-D Branch B expansion or return to direct 8-D fusion, then continue Branch C / Phase 3 work |
 
 Update this table when a gate flips so the plan stays honest for the next work session.
 
@@ -38,6 +38,7 @@ Update this table when a gate flips so the plan stays honest for the next work s
 - **Dependency direction:** `data/` → `models/` → `training/` → `evaluation/`. Do not import training scripts from model modules.
 - **Vertical slices:** prefer a thin working slice (one branch implemented, wired into a training script, producing a checkpoint) over "all model code first, training later."
 - **Freeze discipline:** Branch A conv weights must be verifiably frozen before Phase 2 training begins. Add a unit test that confirms no weight change after an optimizer step. Same rule applies to Branch A + B before Phase 3.
+- **Proposal parity discipline:** when docs say "proposal", keep the exact tensor contracts from the project proposal. When code deviates temporarily, call it out explicitly instead of silently rewriting the proposal in documentation.
 - **Cache contract:** cached flow filenames are `{frame_a_stem}_flow.pt`, computed against the adjacent-index partner rule used by `data/precompute_flow.py`. The loader's real/fake pair sampling can now diverge from that rule. Before Branch C training, either keep Branch C explicitly on adjacent-index pairing or regenerate the cache for the chosen pairing strategy. Do not silently mix cached flow built for one pairing rule with frame pairs sampled by another.
 - **Commit discipline:** land implementation in small commits by subsystem. Default split: shared data contract change, then model implementation, then training script, then tests. Each commit should answer: what boundary advanced, what verification was run.
 - **Docs move with the stage:** if a stage changes a runtime contract (e.g. `__getitem__` return signature), update this file's Progress snapshot and any affected docstrings in the same commit.
@@ -56,7 +57,7 @@ Update this table when a gate flips so the plan stays honest for the next work s
 **Definition of done (default)**
 
 - Unit tests pass for all affected modules.
-- Output shape assertion exists for every new branch: Branch B → `(B, 8)`, Branch C → `(B, 28)`.
+- Output shape assertion exists for every new branch and committed interface: Branch B summary → `(B, 8)`, current Branch B module output → `(B, 32)`, Branch C → `(B, 28)`.
 - No frozen branch weights change after an optimizer step — verified by test.
 - Checkpoint saved with epoch, `model_state_dict`, `optimizer_state_dict`, and best metric.
 - `runs/` log updated with the training run for the phase.
@@ -105,7 +106,7 @@ Update this table when a gate flips so the plan stays honest for the next work s
 
 ## Week 2 — Branches B & C `[IN PROGRESS]`
 
-Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel — no shared code dependencies this week.
+Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel, but the remaining architectural question is whether Branch B's implemented 32-D learned expansion is a temporary Phase 2 convenience or the intended long-term contract.
 
 ### Dev 1 — Branch B (Spatiotemporal)
 
@@ -116,10 +117,12 @@ Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel — no shared cod
   - `velocity = e_t1 − e_t` (64-D)
   - `curvature = velocity / ‖velocity‖` (64-D, L2-normalized)
   - `acceleration` ≈ second-order approximation (64-D)
-  - Aggregate `(mean, std, max)` over each of the three quantities → **8-D output**
+  - Aggregate `(mean, std, max)` over each of the three quantities → proposal-level **8-D summary**
+  - Current implementation expands that summary through a small learned head to a **32-D output**
 - [x] Implement `DiscriminatorPhase2` (`models/discriminator.py`)
   - Load `phase1_branch_a_best.pt`; set Branch A conv `requires_grad = False`
-  - Concat `[branch_a_2048, branch_b_8]` → 2056-D into new fusion FC head (2056 → 512 → 128 → 1)
+  - Current implementation concat `[branch_a_2048, branch_b_32]` → 2080-D into fusion head (2080 → 512 → 128 → 1)
+  - Proposal target for the eventual three-branch model remains `[branch_a_2048, branch_b_8, branch_c_28]` → 2084-D
 - [x] Write Phase 2 training script (`training/phase2_train.py`)
   - Optimizer: Adam (β₁=0.5, β₂=0.999), LR = 2e-4; only Branch B + fusion head params
   - Scheduler: CosineAnnealingLR; 20 epochs, batch size 64; loss: BCE
@@ -148,7 +151,9 @@ Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel — no shared cod
   - **Total: 28-D output**
 - [ ] Implement `DiscriminatorPhase3` (`models/discriminator.py`)
   - Load `phase2_a_b.pt`; freeze Branch A + Branch B (`requires_grad = False`)
-  - Concat `[branch_a_2048, branch_b_8, branch_c_28]` → 2084-D into new fusion FC head (2084 → 512 (LeakyReLU + Dropout(0.3)) → 128 (LeakyReLU) → 1)
+  - If Branch B is reduced back to proposal form: concat `[branch_a_2048, branch_b_8, branch_c_28]` → 2084-D
+  - If Branch B keeps the current learned expansion: concat `[branch_a_2048, branch_b_32, branch_c_28]` → 2108-D
+  - Pick one contract explicitly before implementation; do not leave Phase 3 ambiguous
 - [ ] Implement Hinge loss (`training/losses.py`)
   - `L_hinge = E[max(0, 1 − D(x))] + E[max(0, 1 + D(G(z)))]`
 - [ ] Write Phase 3 training script (`training/phase3_train.py`)
@@ -212,7 +217,7 @@ Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel — no shared cod
 **Goal:** RF classifiers trained for all 7 configs. Per-branch ablation and confusion matrix output complete.
 
 - [ ] Implement `evaluation/ensemble.py`
-  - `extract_branch_logits(model, dataloader, branch) -> np.ndarray` — shape `(N,)`
+  - `extract_branch_outputs(model, dataloader, branch) -> np.ndarray` — shape depends on chosen contract
   - `train_rf_ensemble(features, labels) -> RandomForestClassifier` — `n_estimators=100, random_state=42`
   - `evaluate_ensemble(clf, features, labels) -> dict` — balanced acc, F1, AUC-ROC
 - [ ] Run RF ensemble for all 7 branch combinations on held-out test split
@@ -258,6 +263,8 @@ Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel — no shared cod
 ---
 
 ## Architecture Reference
+
+This reference table describes the proposal target. The current repository only implements Branch A and the A+B Phase 2 subset, where Branch B is expanded to `32-D` before fusion.
 
 ### Branch Dimensions
 
