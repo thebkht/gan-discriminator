@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from training.overfit_stop import OverfitStopConfig, OverfitStopMonitor
+from training.overfit_stop import (
+    OverfitStopConfig,
+    OverfitStopMonitor,
+    ValMetricEarlyStop,
+    ValMetricStopConfig,
+)
 
 
 class OverfitStopMonitorTestCase(unittest.TestCase):
@@ -53,3 +58,20 @@ class OverfitStopMonitorTestCase(unittest.TestCase):
         self.assertFalse(decisions[1].should_stop)
         self.assertTrue(decisions[2].should_stop)
         self.assertIn("configured ceiling", decisions[2].reason or "")
+
+    def test_val_metric_early_stop_after_warmup(self) -> None:
+        monitor = ValMetricEarlyStop(
+            ValMetricStopConfig(metric_name="balanced_accuracy", patience=2, warmup_epochs=1)
+        )
+
+        decisions = [
+            monitor.update(epoch=1, metric_value=0.70),
+            monitor.update(epoch=2, metric_value=0.72),
+            monitor.update(epoch=3, metric_value=0.71),
+            monitor.update(epoch=4, metric_value=0.71),
+        ]
+
+        self.assertFalse(decisions[1].should_stop)
+        self.assertFalse(decisions[2].should_stop)
+        self.assertTrue(decisions[3].should_stop)
+        self.assertIn("did not improve", decisions[3].reason or "")

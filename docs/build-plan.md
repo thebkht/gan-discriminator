@@ -23,7 +23,7 @@
 | Phase | Where the repo is now | Next gate |
 | ----- | --------------------- | --------- |
 | 1 | CelebA at `data/celeba/img_align_celeba` (202,599 images); Branch A encoder and baseline classifier implemented; flow cache complete at `data/flow_cache` (202,599 `*_flow.pt` files, ~7.0 GB, shape `(2, 64, 64)` float32); `test_flow_precompute_smoke` passing; loader supports same-identity real pairs, cross-identity proxy fakes, singleton-adjacent fallback, and attribute-derived pseudo-identities when true identity labels are unavailable | Keep the saved Branch A baseline and reports aligned with the stronger proxy-task configuration |
-| 2 | Branch B (`models/branch_b.py`) and the full Phase 2 A+B stack are implemented; the committed Branch B summary matches the proposal's 8-D temporal layout, but the current code expands it to a learned 32-D feature before fusion; golden regression and Branch A freeze/load tests exist in `tests/test_model.py`; Branch C, Hinge loss, checkpoint resume, and OOD evaluation remain open | Decide whether later phases keep the 32-D Branch B expansion or return to direct 8-D fusion, then continue Branch C / Phase 3 work |
+| 2 | Branch B (`models/branch_b.py`) and the full Phase 2 A+B stack are implemented; Run 3 now shares Branch A's encoder, uses the committed 8-D summary `[vel_mean, vel_std, vel_max, vel_min, cos_sim, l2_dist, sign_consistency, abs_vel_mean]`, expands it to 32-D before fusion, and partially unfreezes the shared encoder tail; golden regression and partial-freeze/load tests exist in `tests/test_model.py`; Branch C, Hinge loss, checkpoint resume wiring, and OOD evaluation remain open | Continue Branch C / Phase 3 work on top of the Run 3 checkpoint contract and shared-encoder Phase 2 baseline |
 
 Update this table when a gate flips so the plan stays honest for the next work session.
 
@@ -271,7 +271,7 @@ This reference table describes the proposal target. The current repository only 
 | Branch | Dim | Signal |
 | ------ | --- | ------ |
 | A — CNN Spatial | 2048-D | Static texture & structure (5 conv blocks, SpectralNorm + BN) |
-| B — Spatiotemporal | 8-D | Velocity, curvature, acceleration summary stats over embed delta |
+| B — Spatiotemporal | 8-D | Shared-encoder temporal stats over embed delta: velocity summary + cosine/L2/sign consistency |
 | C — Physics Dynamics | 28-D | Optical flow div/curl/grad (20-D) + HSV photometrics (8-D) |
 | **Concatenated** | **2084-D** | Fusion FC input |
 
@@ -294,7 +294,8 @@ This reference table describes the proposal target. The current repository only 
 | File | Phase | Contents | Gate |
 | ---- | ----- | -------- | ---- |
 | `phase1_branch_a_best.pt` | 1 | Branch A conv + FC | acc ≥ 77%, F1 ≥ 0.70 ✅ |
-| `phase2_a_b.pt` | 2 | Branch A (frozen) + Branch B + FC | acc ≥ 88%, F1 ≥ 0.88 |
+| `phase2_a_b.pt` | 2 | Legacy pre-Run 3 Branch A + Branch B + FC | acc ≥ 88%, F1 ≥ 0.88 |
+| `phase2_a_b_run3.pt` | 2 | Shared-encoder Run 3 Phase 2 checkpoint | acc ≥ 88%, F1 ≥ 0.88 |
 | `phase3_a_b_c.pt` | 3 | A + B (frozen) + Branch C + FC | acc ≥ 83%, F1 ≥ 0.80 |
 | `phase4_ensemble.pt` | 4 | All branches unfrozen, fine-tuned | B+C ≥ 94.4%, F1 ≥ 0.93 |
 
@@ -322,7 +323,7 @@ This reference table describes the proposal target. The current repository only 
 | ---- | ---------- | ------ | ---------- |
 | Branch A dominates gradients in Phase 4 | High | High | Phased freeze ensures independent feature learning; gradient scaling if Phase 4 still shows Branch A dominance |
 | `identity_CelebA.txt` introduced mid-cache | Medium | High | Keep Branch C on adjacent-index pairing OR regenerate cache before Phase 3 training; never silently mix pairing strategies |
-| Branch B embed CNN co-adapts with Branch A during Phase 2 | Medium | Medium | Branch A strictly frozen; unit test enforces this before any Phase 2 training run |
+| Shared Branch B/Branch A encoder tail overfits or drifts BN stats during Phase 2 | Medium | Medium | Freeze blocks 0-2, keep blocks 3-4 in train mode only, and enforce partial-freeze behavior in unit tests |
 | Flow cache corrupted or stems mismatched | Low | High | `test_flow_precompute_smoke` must pass before Phase 3 train; verify file count after every run |
 | OOD test sets unavailable in Week 4 | Medium | Medium | Source and stage OOD data during Week 3 in parallel with ensemble training |
 | Overfitting to CelebA in Phase 4 | Medium | High | OOD eval mandatory before Phase 4 sign-off; do not close Week 4 without OOD numbers |

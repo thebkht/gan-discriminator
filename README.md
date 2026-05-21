@@ -16,7 +16,7 @@ The codebase is not at full proposal parity yet. Today it includes the completed
 - Implemented: metric computation, checkpointing, run summaries, and optional TensorBoard logging
 - Verified: Branch B regression tests, Branch A freeze tests, data pipeline tests, overfit-stop unit tests, and Branch A evaluation smoke tests
 - Not implemented yet: Branch C, Phase 3+, Hinge-loss fine-tuning, and the final fused three-branch discriminator from the proposal
-- Historical checkpoint: `checkpoints/phase2_a_b.pt` was trained on the earlier trivial proxy task and should not be treated as the current baseline
+- Historical checkpoint: `checkpoints/phase2_a_b.pt` was trained on the legacy pre-Run 3 Branch B architecture and should not be treated as the current baseline
 
 ## Repository Layout
 
@@ -72,7 +72,7 @@ The proposal defines a three-branch discriminator over consecutive `64 x 64` RGB
 The intended training order is:
 
 1. Train Branch A end-to-end.
-2. Add Branch B with Branch A frozen.
+2. Add Branch B with Branch A partially frozen, then finetune the shared encoder tail.
 3. Add Branch C with earlier branches frozen.
 4. Fine-tune the fused model and evaluate branch ensembles, with B+C treated as the strongest OOD-oriented configuration in the proposal.
 
@@ -87,12 +87,12 @@ Branch A in [models/branch_a.py](/Users/thebkht/Sejong Uni/Pattern Regocnition/d
 
 Branch B and Phase 2 in [models/branch_b.py](/Users/thebkht/Sejong Uni/Pattern Regocnition/deepfake_detector/models/branch_b.py) and [models/discriminator.py](/Users/thebkht/Sejong Uni/Pattern Regocnition/deepfake_detector/models/discriminator.py):
 
-- `EmbedCNN`: tied lightweight 4-block CNN per frame, projected to a `64-D` embedding
-- Committed temporal summary: `8-D` `[velocity(mean,std,max), curvature(mean,std,max), acceleration(mean,max)]`
-- Current implementation detail: that `8-D` summary is expanded to a learned `32-D` feature before fusion
-- `DiscriminatorPhase2`: frozen Branch A encoder on `frame_a`, concatenated with Branch B's `32-D` output, then fused through a `2080 -> 512 -> 128 -> 1` head
+- `BranchB_Spatiotemporal` now reuses the pretrained `BranchAEncoder` for both frames instead of a separate `EmbedCNN`
+- Committed temporal summary: `8-D` `[vel_mean, vel_std, vel_max, vel_min, cos_sim, l2_dist, sign_consistency, abs_vel_mean]`
+- The `8-D` summary is normalized with `LayerNorm(8)` and expanded to a learned `32-D` feature before fusion
+- `DiscriminatorPhase2` keeps `feat_a` on a `no_grad()` path, finetunes only the last two Branch A blocks through Branch B, and fuses `2048 + 32 = 2080` features through a stronger dropout head
 
-This means the current code is aligned with the proposal directionally, but it is not yet the proposal's final `2048 + 8 + 28 = 2084` fused discriminator.
+This means the current code is still not the proposal's final `2048 + 8 + 28 = 2084` fused discriminator, but Run 3 now aligns Branch B to the same pretrained feature space as Branch A.
 
 ## Dataset Pipeline
 
@@ -128,7 +128,8 @@ Key defaults:
 - Native resolution target: `178 x 218`
 - Batch size: `64`
 - Epochs: `100`
-- Learning rate: `2e-4`
+- Learning rate: `1.5e-4`
+- Shared-backbone finetuning: last `2` Branch A blocks trainable at `0.1x` LR
 - Scheduler: `CosineAnnealingLR`
 - Checkpoint metric: `balanced_accuracy`
 - Default checkpoint name: `phase1_branch_a_best.pt`
@@ -141,8 +142,9 @@ The file now also contains a dedicated `phase2:` block:
 - Scheduler: `CosineAnnealingLR`
 - Pretrained Branch A checkpoint: `phase1_branch_a_best.pt`
 - Default Phase 2 checkpoint name: `phase2_a_b.pt`
+- Recommended Run 3 checkpoint name: `phase2_a_b_run3.pt`
 - Targets: balanced accuracy `>= 0.88`, F1 `>= 0.88`
-- Early-stop defaults: warmup `3`, overfit patience `5`, val-loss ceiling patience `3`, Phase 2 ceiling `0.40`
+- Early-stop defaults: warmup `3`, overfit patience `5`, val-loss ceiling patience `3`, validation balanced-accuracy patience `4`, Phase 2 ceiling `0.40`
 
 By default, outputs are written to:
 
