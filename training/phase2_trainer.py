@@ -28,7 +28,10 @@ from training.trainer import (
     _format_epoch_prefix,
     _format_metric_value,
     _format_progress_bar,
+    _format_progress_prefix,
     _resolve_device,
+    _print_epoch_result_row,
+    _print_progress_header,
 )
 from training.batch_preview import maybe_save_train_preview, maybe_save_val_previews
 from training.overfit_stop import OverfitStopConfig, OverfitStopMonitor
@@ -122,6 +125,7 @@ def _run_epoch(
 
     num_batches = len(dataloader) if max_batches is None else min(len(dataloader), max_batches)
     progress_end = "" if sys.stdout.isatty() else "\n"
+    _print_progress_header(split_name=split_name)
     for batch_index, batch in enumerate(dataloader, start=1):
         if max_batches is not None and batch_index > max_batches:
             break
@@ -170,13 +174,20 @@ def _run_epoch(
         batches_per_second = batch_index / elapsed_seconds if elapsed_seconds > 0 else 0.0
         eta_seconds = average_batch_seconds * (num_batches - batch_index)
         percent_complete = (100.0 * batch_index / num_batches) if num_batches > 0 else 0.0
-        epoch_prefix = _format_epoch_prefix(epoch, total_epochs, show_epoch=split_name.lower() != "val")
+        progress_prefix = _format_progress_prefix(
+            epoch=epoch,
+            total_epochs=total_epochs,
+            split_name=split_name,
+            device=device,
+            running_loss=running_loss,
+            batch_size=batch_size,
+            image_size=int(frame_a.shape[-1]),
+        )
         print(
-            f"\r{epoch_prefix}   "
-            f"loss {_format_metric_value(running_loss, precision=6):>8}   "
-            f"{split_name:<5} {percent_complete:>3.0f}% {_format_progress_bar(batch_index, num_batches, width=14)} "
-            f"{batch_index:>3d}/{num_batches:<3d} {batches_per_second:>3.1f}it/s {_format_duration(elapsed_seconds)} "
-            f"< {_format_duration(eta_seconds)}",
+            f"\r{progress_prefix} {percent_complete:>3.0f}% "
+            f"{_format_progress_bar(batch_index, num_batches, width=14)} "
+            f"{batch_index:>4d}/{num_batches:<4d} {batches_per_second:>4.1f}it/s "
+            f"{_format_duration(elapsed_seconds)} < {_format_duration(eta_seconds)}",
             end=progress_end,
             flush=True,
         )
@@ -191,6 +202,12 @@ def _run_epoch(
     logits = np.concatenate(all_logits)
     labels = np.concatenate(all_labels).astype(np.int64)
     metrics = compute_binary_classification_metrics(logits=logits, labels=labels, average_loss=average_loss)
+    _print_epoch_result_row(
+        split_name="all" if split_name.lower() == "val" else split_name,
+        loss=float(metrics["loss"]),
+        balanced_accuracy=float(metrics["balanced_accuracy"]),
+        f1=float(metrics["f1"]),
+    )
     metrics["duration_seconds"] = time.perf_counter() - start
     metrics["num_batches"] = float(num_batches)
     if include_predictions:

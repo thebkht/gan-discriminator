@@ -32,7 +32,7 @@ TARGET_F1 = 0.70
 BRANCH_A_VAL_LOSS_CEILING = 0.35
 
 BinaryMetrics = Dict[str, float]
-EpochMetrics = Dict[str, float | np.ndarray[Any, Any]]
+EpochMetrics = Dict[str, Any]
 
 
 def _format_duration(seconds: float) -> str:
@@ -63,6 +63,61 @@ def _format_epoch_prefix(epoch: int, total_epochs: int, *, show_epoch: bool) -> 
     if not show_epoch:
         return " " * len(formatted_prefix)
     return formatted_prefix
+
+
+def _format_memory_label(device: torch.device) -> str:
+    if device.type == "cuda":
+        allocated_gb = torch.cuda.memory_allocated(device=device) / (1024**3)
+        return f"{allocated_gb:.2f}G"
+    return device.type.upper()
+
+
+def _print_progress_header(*, split_name: str) -> None:
+    if split_name.lower() == "train":
+        print(f"\n{'Epoch':>11}{'GPU_mem':>11}{'loss':>11}{'Instances':>11}{'Size':>11}", flush=True)
+        return
+    print(f"{'split':>11}{'loss':>11}{'bal_acc':>11}{'f1':>11}", flush=True)
+
+
+def _format_progress_prefix(
+    *,
+    epoch: int,
+    total_epochs: int,
+    split_name: str,
+    device: torch.device,
+    running_loss: float,
+    batch_size: int,
+    image_size: int,
+) -> str:
+    if split_name.lower() == "train":
+        return (
+            f"{f'{epoch}/{total_epochs}':>11}"
+            f"{_format_memory_label(device):>11}"
+            f"{_format_metric_value(running_loss, precision=6):>11}"
+            f"{batch_size:>11d}"
+            f"{image_size:>11d}:"
+        )
+    return (
+        f"{split_name:>11}"
+        f"{_format_metric_value(running_loss, precision=6):>11}"
+        f"{'--':>11}"
+        f"{'--':>11}:"
+    )
+
+
+def _print_epoch_result_row(
+    *,
+    split_name: str,
+    loss: float,
+    balanced_accuracy: float,
+    f1: float,
+) -> None:
+    print(
+        f"{split_name:>11}{_format_metric_value(loss, precision=6):>11}"
+        f"{_format_metric_value(balanced_accuracy, precision=4):>11}"
+        f"{_format_metric_value(f1, precision=4):>11}",
+        flush=True,
+    )
 
 
 @dataclass
@@ -180,6 +235,7 @@ def _run_epoch(
 
     num_batches = len(dataloader)
     progress_end = "" if sys.stdout.isatty() else "\n"
+    _print_progress_header(split_name=split_name)
     for batch_index, batch in enumerate(dataloader, start=1):
         frame_a = batch["frame_a"].to(device)
         frame_b = batch["frame_b"].to(device)
@@ -225,17 +281,20 @@ def _run_epoch(
         batches_per_second = batch_index / elapsed_seconds if elapsed_seconds > 0 else 0.0
         eta_seconds = average_batch_seconds * (num_batches - batch_index)
         percent_complete = (100.0 * batch_index / num_batches) if num_batches > 0 else 0.0
-        epoch_prefix = _format_epoch_prefix(
-            epoch,
-            total_epochs,
-            show_epoch=split_name.lower() != "val",
+        progress_prefix = _format_progress_prefix(
+            epoch=epoch,
+            total_epochs=total_epochs,
+            split_name=split_name,
+            device=device,
+            running_loss=running_loss,
+            batch_size=batch_size,
+            image_size=int(frame_a.shape[-1]),
         )
         print(
-            f"\r{epoch_prefix}   "
-            f"loss {_format_metric_value(running_loss, precision=6):>8}   "
-            f"{split_name:<5} {percent_complete:>3.0f}% {_format_progress_bar(batch_index, num_batches, width=14)} "
-            f"{batch_index:>3d}/{num_batches:<3d} {batches_per_second:>3.1f}it/s {_format_duration(elapsed_seconds)} "
-            f"< {_format_duration(eta_seconds)}",
+            f"\r{progress_prefix} {percent_complete:>3.0f}% "
+            f"{_format_progress_bar(batch_index, num_batches, width=14)} "
+            f"{batch_index:>4d}/{num_batches:<4d} {batches_per_second:>4.1f}it/s "
+            f"{_format_duration(elapsed_seconds)} < {_format_duration(eta_seconds)}",
             end=progress_end,
             flush=True,
         )
@@ -253,6 +312,12 @@ def _run_epoch(
         logits=logits,
         labels=labels,
         average_loss=average_loss,
+    )
+    _print_epoch_result_row(
+        split_name="all" if split_name.lower() == "val" else split_name,
+        loss=float(metrics["loss"]),
+        balanced_accuracy=float(metrics["balanced_accuracy"]),
+        f1=float(metrics["f1"]),
     )
     metrics["duration_seconds"] = time.perf_counter() - start
     metrics["num_batches"] = float(len(dataloader))
