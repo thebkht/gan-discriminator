@@ -185,17 +185,17 @@ gantt
   title Project Timeline
   dateFormat YYYY-MM-DD
   section Week 1
-    Setup + Branch A (Dev 1)      :done, 2026-05-01, 7d
-    Data + Flow + Eval module (Dev 2) :done, 2026-05-01, 7d
+    Setup + Branch A (Dev 1)      :done, 2026-05-15, 7d
+    Data + Flow + Eval module (Dev 2) :done, 2026-05-15, 7d
   section Week 2
-    Branch B (Dev 1)              :done, 2026-05-08, 7d
-    Flow cache + Branch C (Dev 2) :active, 2026-05-08, 7d
+    Branch B (Dev 1)              :done, 2026-05-22, 7d
+    Flow cache + Branch C (Dev 2) :active, 2026-05-22, 7d
   section Week 3
-    Ensemble fine-tune (Dev 1)    :2026-05-15, 7d
-    RF ensemble + ablation (Dev 2):2026-05-15, 7d
+    Ensemble fine-tune (Dev 1)    :2026-05-29, 7d
+    RF ensemble + ablation (Dev 2):2026-05-29, 7d
   section Week 4
-    Ensemble experiments (Dev 1)  :2026-05-22, 7d
-    OOD + profiling + report (Dev 2) :2026-05-22, 7d
+    Ensemble experiments (Dev 1)  :2026-06-05, 7d
+    OOD + profiling + report (Dev 2) :2026-06-05, 7d
 ```
 
 > **Compression rationale:** Setup and Branch A are merged into Week 1 by running data pipeline work (Dev 2) in parallel with scaffold + model work (Dev 1). Branches B and C are built in parallel in Week 2 since they are independent of each other. Eval is tightened to one week by preparing the eval harness during Week 3 alongside training.
