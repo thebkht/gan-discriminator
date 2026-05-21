@@ -31,6 +31,13 @@ class BranchAEncoder(nn.Module):
             _conv_block(512, 512, use_batch_norm=False),
         )
 
+    def set_trainable_blocks(self, train_last_n: int = 0) -> None:
+        total_blocks = len(self.features)
+        for index, block in enumerate(self.features):
+            requires_grad = index >= total_blocks - train_last_n
+            for parameter in block.parameters():
+                parameter.requires_grad = requires_grad
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         encoded = self.features(x)
         return encoded.flatten(start_dim=1)
