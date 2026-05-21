@@ -105,19 +105,21 @@ Activation: **LeakyReLU(0.2)** throughout.
 
 Operates on a **consecutive frame pair**. Encodes each frame into a 64-D embedding, then computes temporal derivative statistics.
 
-```
-frame_t  ──► Embed CNN ──► e_t  (64-D)
-frame_t1 ──► Embed CNN ──► e_t1 (64-D)
-                                │
-                  velocity   = e_t1 − e_t
-                  curvature  = velocity / ‖velocity‖
-                  accel      ≈ second-order approx
-                                │
-            Summary stats (mean, std, max) × 3 quantities
-                                │
-                         Proposal: 8-D output
-                         Current repo: 8-D summary
-                         expanded to learned 32-D
+```mermaid
+flowchart LR
+  frame_t["frame_t"] --> CNN1["Embed CNN"]
+  frame_t1["frame_t1"] --> CNN2["Embed CNN"]
+  CNN1 --> e_t["e_t 64-D"]
+  CNN2 --> e_t1["e_t1 64-D"]
+  e_t --> VEL["velocity = e_t1 − e_t"]
+  e_t1 --> VEL
+  VEL --> CUR["curvature = velocity / ‖velocity‖"]
+  VEL --> ACC["accel ≈ second-order approx"]
+  CUR --> STATS["Summary stats\nmean, std, max × 3 quantities"]
+  ACC --> STATS
+  VEL --> STATS
+  STATS --> OUT["8-D output"]
+  OUT --> EXP["expander 8 to 32-D"]
 ```
 
 **What it catches:** Lip-sync deepfakes, expression swaps, discontinuous feature trajectories.
@@ -127,10 +129,10 @@ frame_t1 ──► Embed CNN ──► e_t1 (64-D)
 Accepts either **pre-computed features** (offline, recommended for speed) or **raw frame pairs**.
 
 ```
-Optical flow features (div / curl / grad)  →  20-D
-HSV photometric statistics (h, s, v mean/std per frame)  →  8-D
-─────────────────────────────────────────────────────────────
-Total  →  28-D
+Optical flow (div / curl / grad)     → 20-D
+HSV photometrics (h, s, v mean/std)  →  8-D
+─────────────────────────────────────────────
+Total                                → 28-D
 ```
 
 **What it catches:** Skin tone flicker, implausible optical flow patterns, color temperature inconsistencies.
@@ -178,11 +180,22 @@ Current status from the repository state:
 
 ### Milestones
 
-```
-Week 1 — Setup + Branch A (Phase 0 & 1 merged)
-Week 2 — Branches B & C in parallel (Phase 2 & 3 parallel)
-Week 3 — Full Ensemble Fine-tune (Phase 4)
-Week 4 — Eval & Hardening (Phase 5)
+```mermaid
+gantt
+  title Project Timeline
+  dateFormat YYYY-MM-DD
+  section Week 1
+    Setup + Branch A (Dev 1)      :done, 2026-05-01, 7d
+    Data + Flow + Eval module (Dev 2) :done, 2026-05-01, 7d
+  section Week 2
+    Branch B (Dev 1)              :done, 2026-05-08, 7d
+    Flow cache + Branch C (Dev 2) :active, 2026-05-08, 7d
+  section Week 3
+    Ensemble fine-tune (Dev 1)    :2026-05-15, 7d
+    RF ensemble + ablation (Dev 2):2026-05-15, 7d
+  section Week 4
+    Ensemble experiments (Dev 1)  :2026-05-22, 7d
+    OOD + profiling + report (Dev 2) :2026-05-22, 7d
 ```
 
 > **Compression rationale:** Setup and Branch A are merged into Week 1 by running data pipeline work (Dev 2) in parallel with scaffold + model work (Dev 1). Branches B and C are built in parallel in Week 2 since they are independent of each other. Eval is tightened to one week by preparing the eval harness during Week 3 alongside training.
@@ -267,9 +280,23 @@ Two developers, four weeks, split by model vs. data/eval ownership.
 
 ### Critical Sync Points
 
-1. **Mid Week 1** — Dev 2's data loader must be usable so Dev 1 can begin Branch A training. Dev 2's eval module must expose a stable interface so Dev 1 can integrate it into the training loop.
-2. **End of Week 1** — Dev 1's Branch A checkpoint (`phase1_branch_a_best.pt`) must be saved and frozen so Dev 2 can use it in the Phase 3 (Branch C) training script in Week 2.
-3. **End of Week 2** — Both Branch B (`phase2_a_b.pt`) and Branch C (`phase3_a_b_c.pt`) checkpoints must be ready before Dev 1 begins ensemble fine-tune and Dev 2 begins RF ensemble experiments in Week 3.
+```mermaid
+sequenceDiagram
+  participant D1 as Dev 1
+  participant D2 as Dev 2
+  Note over D1,D2: Mid Week 1
+  D2->>D1: data loader ready
+  D2->>D1: eval module interface stable
+  Note over D1,D2: End of Week 1
+  D1->>D2: phase1_branch_a_best.pt
+  Note over D1,D2: End of Week 2
+  D1->>D2: phase2_a_b.pt
+  D2->>D1: phase3_a_b_c.pt
+  Note over D1,D2: End of Week 3
+  D1->>D2: phase4_ensemble.pt
+  Note over D1,D2: End of Week 4
+  D2->>D1: OOD eval results + final report
+```
 
 ---
 
