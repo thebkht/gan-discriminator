@@ -74,3 +74,25 @@ phase2:
     warmup_epochs: 3
     val_loss_ceiling: 0.40
     enable_loss_ceiling: true
+
+phase3:
+  epochs: 20
+  learning_rate: 0.0002
+  optimizer: adam
+  betas:
+    - 0.5
+    - 0.999
+  scheduler: CosineAnnealingLR
+  scheduler_t_max: 20
+  dropout: 0.3
+  seed: 42
+  checkpoint_name: phase3_a_b_c.pt
+  pretrained_phase2: phase2_a_b.pt
+  pairing_mode: adjacent_cache
+  include_flow: true
+  targets:
+    balanced_accuracy: 0.83
+    f1: 0.80
+  early_stopping:
+    patience_overfit: 5
+    val_loss_ceiling: 0.45

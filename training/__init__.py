@@ -2,7 +2,7 @@
 
 from training.tracker import Tracker
 
-__all__ = ["Tracker", "train_branch_a", "train_phase2"]
+__all__ = ["Tracker", "train_branch_a", "train_phase2", "train_phase3"]
 
 
 def __getattr__(name: str):
@@ -14,4 +14,8 @@ def __getattr__(name: str):
         from training.phase2_trainer import train_phase2
 
         return train_phase2
+    if name == "train_phase3":
+        from training.phase3_trainer import train_phase3
+
+        return train_phase3
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

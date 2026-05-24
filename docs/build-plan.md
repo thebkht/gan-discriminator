@@ -23,7 +23,7 @@
 | Phase | Where the repo is now | Next gate |
 | ----- | --------------------- | --------- |
 | 1 | CelebA at `data/celeba/img_align_celeba` (202,599 images); Branch A encoder and baseline classifier implemented; flow cache complete at `data/flow_cache` (202,599 `*_flow.pt` files, ~7.0 GB, shape `(2, 64, 64)` float32); `test_flow_precompute_smoke` passing; loader supports same-identity real pairs, cross-identity proxy fakes, singleton-adjacent fallback, and attribute-derived pseudo-identities when true identity labels are unavailable | Keep the saved Branch A baseline and reports aligned with the stronger proxy-task configuration |
-| 2 | Branch B (`models/branch_b.py`) and the full Phase 2 A+B stack are implemented; Run 3 now shares Branch A's encoder, uses the committed 8-D summary `[vel_mean, vel_std, vel_max, vel_min, cos_sim, l2_dist, sign_consistency, abs_vel_mean]`, expands it to 32-D before fusion, and partially unfreezes the shared encoder tail; golden regression and partial-freeze/load tests exist in `tests/test_model.py`; Branch C, Hinge loss, checkpoint resume wiring, and OOD evaluation remain open | Continue Branch C / Phase 3 work on top of the Run 3 checkpoint contract and shared-encoder Phase 2 baseline |
+| 2 | Branch B (`models/branch_b.py`) and the full Phase 2 A+B stack are implemented; Run 3 now shares Branch A's encoder, uses the committed 8-D summary `[vel_mean, vel_std, vel_max, vel_min, cos_sim, l2_dist, sign_consistency, abs_vel_mean]`, expands it to 32-D before fusion, and partially unfreezes the shared encoder tail. Branch C (`models/branch_c.py`), `DiscriminatorPhase3`, Hinge loss, flow-aware `adjacent_cache` loading, checkpoint resume helpers, and Phase 3 CLI/trainer wiring are now implemented with golden/freeze/load tests; the remaining open gate is the full `phase3_a_b_c.pt` training run and its report artifacts. | Run the full Phase 3 training/eval path and save `phase3_a_b_c.pt` with gate-clearing metrics |
 
 Update this table when a gate flips so the plan stays honest for the next work session.
 
@@ -142,28 +142,28 @@ Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel, but the remainin
 
 > **Cache contract:** do not rename or regenerate `*_flow.pt` files during this week unless `identity_CelebA.txt` is explicitly introduced and cache regeneration is intentional. Keep Branch C on adjacent-index pairing to match the existing cache.
 
-- [ ] Update `CelebAFramePairDataset.__getitem__` to return `(frame_t, frame_t1, flow_tensor, label)`
+- [x] Update `CelebAFramePairDataset.__getitem__` to return `(frame_t, frame_t1, flow_tensor, label)`
   - Load `{frame_a_stem}_flow.pt` from `data/flow_cache/`
   - Unit test: returned flow tensor shape `(2, 64, 64)` ✓, no NaN ✓
-- [ ] Implement `BranchC_Physics` (`models/branch_c.py`)
+- [x] Implement `BranchC_Physics` (`models/branch_c.py`)
   - **Optical flow features (20-D):** load cached dx/dy tensor; compute divergence, curl, gradient magnitude per pixel; aggregate `(mean, std, max, min, range)` over each → 15-D; global stats (mean magnitude, max magnitude, dominant direction histogram bins) → 5-D
   - **HSV photometrics (8-D):** convert `frame_t` and `frame_t1` from [-1,1] to [0,1] → RGB → HSV; per frame: `(mean_H, std_H, mean_S, mean_V)` → 4-D × 2 frames = 8-D
   - **Total: 28-D output**
-- [ ] Implement `DiscriminatorPhase3` (`models/discriminator.py`)
+- [x] Implement `DiscriminatorPhase3` (`models/discriminator.py`)
   - Load `phase2_a_b.pt`; freeze Branch A + Branch B (`requires_grad = False`)
   - If Branch B is reduced back to proposal form: concat `[branch_a_2048, branch_b_8, branch_c_28]` → 2084-D
   - If Branch B keeps the current learned expansion: concat `[branch_a_2048, branch_b_32, branch_c_28]` → 2108-D
   - Pick one contract explicitly before implementation; do not leave Phase 3 ambiguous
-- [ ] Implement Hinge loss (`training/losses.py`)
+- [x] Implement Hinge loss (`training/losses.py`)
   - `L_hinge = E[max(0, 1 − D(x))] + E[max(0, 1 + D(G(z)))]`
-- [ ] Write Phase 3 training script (`training/phase3_train.py`)
+- [x] Write Phase 3 training script (`training/phase3_train.py`)
   - Optimizer: Adam (β₁=0.5, β₂=0.999), LR = 2e-4; only Branch C + fusion head params
   - Scheduler: CosineAnnealingLR; 20 epochs, batch size 64; loss: BCE
-- [ ] Implement checkpoint save/resume (`training/trainer.py`)
+- [x] Implement checkpoint save/resume (`training/checkpointing.py`, `training/phase3_trainer.py`)
   - Save: epoch, `model_state_dict`, `optimizer_state_dict`, best metric
   - Resume: `--resume checkpoints/<path>.pt`
-- [ ] Finalize eval module (`evaluation/eval.py`) — replace stubs with real implementations; add `plot_confusion_matrix(y_true, y_pred, save_path)`
-- [ ] Unit tests (`tests/test_model.py`, `tests/test_data.py`)
+- [x] Finalize eval module (`evaluation/eval.py`) — replace stubs with real implementations; add `plot_confusion_matrix(y_true, y_pred, save_path)`
+- [x] Unit tests (`tests/test_model.py`, `tests/test_data.py`)
   - Branch C output shape `(B, 28)` ✓
   - Full Phase 3 forward pass output `(B, 1)` ✓
   - Branch A + B weights unchanged after Phase 3 optimizer step ✓
