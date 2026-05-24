@@ -36,6 +36,7 @@ from training.trainer import (
     _print_epoch_result_row,
     _print_progress_header,
     _resolve_device,
+    suppress_console_input,
 )
 
 
@@ -421,92 +422,93 @@ def train_phase3(
         best_epoch = payload.epoch
 
     try:
-        for epoch in range(start_epoch, int(phase3_cfg["epochs"]) + 1):
-            train_metrics, _, _ = _run_epoch(
-                model,
-                train_loader,
-                criterion,
-                device,
-                optimizer=optimizer,
-                epoch=epoch,
-                total_epochs=int(phase3_cfg["epochs"]),
-                split_name="train",
-                max_batches=max_batches,
-                run_dir=run_dir,
-            )
-            val_metrics, val_logits, val_labels = _run_epoch(
-                model,
-                val_loader,
-                criterion,
-                device,
-                epoch=epoch,
-                total_epochs=int(phase3_cfg["epochs"]),
-                split_name="val",
-                max_batches=max_batches,
-                run_dir=run_dir,
-                include_predictions=True,
-            )
-            current_lr = float(optimizer.param_groups[0]["lr"])
-            scheduler.step()
-            history.extend(
-                [
-                    EpochResult(epoch, "train", train_metrics["loss"], train_metrics["balanced_accuracy"], train_metrics["f1"], current_lr, train_metrics["duration_seconds"]),
-                    EpochResult(epoch, "val", val_metrics["loss"], val_metrics["balanced_accuracy"], val_metrics["f1"], current_lr, val_metrics["duration_seconds"]),
-                ]
-            )
-            if tracker is not None:
-                tracker.log_scalar("loss/train", train_metrics["loss"], epoch)
-                tracker.log_scalar("loss/val", val_metrics["loss"], epoch)
-                tracker.log_scalar("balanced_accuracy/train", train_metrics["balanced_accuracy"], epoch)
-                tracker.log_scalar("balanced_accuracy/val", val_metrics["balanced_accuracy"], epoch)
-                tracker.log_scalar("f1/train", train_metrics["f1"], epoch)
-                tracker.log_scalar("f1/val", val_metrics["f1"], epoch)
-                tracker.log_scalar("auc_roc/val", val_metrics["auc_roc"], epoch)
-                tracker.log_scalar("lr", current_lr, epoch)
-
-            should_replace = (
-                best_metrics is None
-                or best_val_logits is None
-                or best_val_labels is None
-                or val_metrics["balanced_accuracy"] > best_metrics["balanced_accuracy"]
-            )
-            if should_replace:
-                best_metrics = val_metrics
-                best_epoch = epoch
-                if val_logits is None or val_labels is None:
-                    raise RuntimeError("Validation predictions were requested but not returned")
-                best_val_logits = val_logits.copy()
-                best_val_labels = val_labels.copy()
-                save_checkpoint(
-                    checkpoint_path,
-                    CheckpointPayload(
-                        epoch=epoch,
-                        phase=3,
-                        model_state_dict=model.state_dict(),
-                        optimizer_state_dict=optimizer.state_dict(),
-                        scheduler_state_dict=scheduler.state_dict(),
-                        best_validation_metrics={
-                            "balanced_accuracy": val_metrics["balanced_accuracy"],
-                            "f1": val_metrics["f1"],
-                            "auc_roc": val_metrics["auc_roc"],
-                            "loss": val_metrics["loss"],
-                        },
-                        config=effective_config,
-                    ),
+        with suppress_console_input():
+            for epoch in range(start_epoch, int(phase3_cfg["epochs"]) + 1):
+                train_metrics, _, _ = _run_epoch(
+                    model,
+                    train_loader,
+                    criterion,
+                    device,
+                    optimizer=optimizer,
+                    epoch=epoch,
+                    total_epochs=int(phase3_cfg["epochs"]),
+                    split_name="train",
+                    max_batches=max_batches,
+                    run_dir=run_dir,
                 )
-            print(
-                (
-                    f"\n{_format_epoch_prefix(epoch, int(phase3_cfg['epochs']), show_epoch=False)}   "
-                    f"train_loss {_format_metric_value(train_metrics['loss'], precision=6):>8}   "
-                    f"val_loss {_format_metric_value(val_metrics['loss'], precision=6):>8}   "
-                    f"bal_acc {_format_metric_value(val_metrics['balanced_accuracy'], precision=4):>6}   "
-                    f"f1 {_format_metric_value(val_metrics['f1'], precision=4):>6}   "
-                    f"lr {current_lr:>8.6f}   "
-                    f"best {best_epoch:>2d}/{int(phase3_cfg['epochs']):<2d} "
-                    f"{_format_metric_value(cast(Dict[str, float], best_metrics)['balanced_accuracy'], precision=4):>6}\n"
-                ),
-                flush=True,
-            )
+                val_metrics, val_logits, val_labels = _run_epoch(
+                    model,
+                    val_loader,
+                    criterion,
+                    device,
+                    epoch=epoch,
+                    total_epochs=int(phase3_cfg["epochs"]),
+                    split_name="val",
+                    max_batches=max_batches,
+                    run_dir=run_dir,
+                    include_predictions=True,
+                )
+                current_lr = float(optimizer.param_groups[0]["lr"])
+                scheduler.step()
+                history.extend(
+                    [
+                        EpochResult(epoch, "train", train_metrics["loss"], train_metrics["balanced_accuracy"], train_metrics["f1"], current_lr, train_metrics["duration_seconds"]),
+                        EpochResult(epoch, "val", val_metrics["loss"], val_metrics["balanced_accuracy"], val_metrics["f1"], current_lr, val_metrics["duration_seconds"]),
+                    ]
+                )
+                if tracker is not None:
+                    tracker.log_scalar("loss/train", train_metrics["loss"], epoch)
+                    tracker.log_scalar("loss/val", val_metrics["loss"], epoch)
+                    tracker.log_scalar("balanced_accuracy/train", train_metrics["balanced_accuracy"], epoch)
+                    tracker.log_scalar("balanced_accuracy/val", val_metrics["balanced_accuracy"], epoch)
+                    tracker.log_scalar("f1/train", train_metrics["f1"], epoch)
+                    tracker.log_scalar("f1/val", val_metrics["f1"], epoch)
+                    tracker.log_scalar("auc_roc/val", val_metrics["auc_roc"], epoch)
+                    tracker.log_scalar("lr", current_lr, epoch)
+
+                should_replace = (
+                    best_metrics is None
+                    or best_val_logits is None
+                    or best_val_labels is None
+                    or val_metrics["balanced_accuracy"] > best_metrics["balanced_accuracy"]
+                )
+                if should_replace:
+                    best_metrics = val_metrics
+                    best_epoch = epoch
+                    if val_logits is None or val_labels is None:
+                        raise RuntimeError("Validation predictions were requested but not returned")
+                    best_val_logits = val_logits.copy()
+                    best_val_labels = val_labels.copy()
+                    save_checkpoint(
+                        checkpoint_path,
+                        CheckpointPayload(
+                            epoch=epoch,
+                            phase=3,
+                            model_state_dict=model.state_dict(),
+                            optimizer_state_dict=optimizer.state_dict(),
+                            scheduler_state_dict=scheduler.state_dict(),
+                            best_validation_metrics={
+                                "balanced_accuracy": val_metrics["balanced_accuracy"],
+                                "f1": val_metrics["f1"],
+                                "auc_roc": val_metrics["auc_roc"],
+                                "loss": val_metrics["loss"],
+                            },
+                            config=effective_config,
+                        ),
+                    )
+                print(
+                    (
+                        f"\n{_format_epoch_prefix(epoch, int(phase3_cfg['epochs']), show_epoch=False)}   "
+                        f"train_loss {_format_metric_value(train_metrics['loss'], precision=6):>8}   "
+                        f"val_loss {_format_metric_value(val_metrics['loss'], precision=6):>8}   "
+                        f"bal_acc {_format_metric_value(val_metrics['balanced_accuracy'], precision=4):>6}   "
+                        f"f1 {_format_metric_value(val_metrics['f1'], precision=4):>6}   "
+                        f"lr {current_lr:>8.6f}   "
+                        f"best {best_epoch:>2d}/{int(phase3_cfg['epochs']):<2d} "
+                        f"{_format_metric_value(cast(Dict[str, float], best_metrics)['balanced_accuracy'], precision=4):>6}\n"
+                    ),
+                    flush=True,
+                )
     finally:
         if tracker is not None:
             tracker.flush()

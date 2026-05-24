@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import random
 import sys
+import termios
 import time
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
@@ -217,6 +219,27 @@ def _resolve_device(device_override: Optional[str] = None) -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")
+
+
+@contextmanager
+def suppress_console_input():
+    stdin = sys.stdin
+    if not stdin.isatty():
+        yield
+        return
+
+    fd = stdin.fileno()
+    original_attrs = termios.tcgetattr(fd)
+    muted_attrs = termios.tcgetattr(fd)
+    muted_attrs[3] &= ~(termios.ECHO | termios.ICANON | termios.IEXTEN)
+
+    try:
+        termios.tcflush(fd, termios.TCIFLUSH)
+        termios.tcsetattr(fd, termios.TCSANOW, muted_attrs)
+        yield
+    finally:
+        termios.tcflush(fd, termios.TCIFLUSH)
+        termios.tcsetattr(fd, termios.TCSANOW, original_attrs)
 
 
 def _run_epoch(
@@ -557,111 +580,112 @@ def train_branch_a(
         training_cfg=training_cfg,
     )
     try:
-        for epoch in range(1, int(training_cfg["epochs"]) + 1):
-            train_metrics = _run_epoch(
-                model,
-                train_loader,
-                criterion,
-                device,
-                optimizer=optimizer,
-                epoch=epoch,
-                total_epochs=int(training_cfg["epochs"]),
-                split_name="train",
-                run_dir=run_dir,
-            )
-            val_metrics = _run_epoch(
-                model,
-                val_loader,
-                criterion,
-                device,
-                epoch=epoch,
-                total_epochs=int(training_cfg["epochs"]),
-                split_name="val",
-                run_dir=run_dir,
-                include_predictions=True,
-            )
-            current_lr = float(optimizer.param_groups[0]["lr"])
-            scheduler.step()
+        with suppress_console_input():
+            for epoch in range(1, int(training_cfg["epochs"]) + 1):
+                train_metrics = _run_epoch(
+                    model,
+                    train_loader,
+                    criterion,
+                    device,
+                    optimizer=optimizer,
+                    epoch=epoch,
+                    total_epochs=int(training_cfg["epochs"]),
+                    split_name="train",
+                    run_dir=run_dir,
+                )
+                val_metrics = _run_epoch(
+                    model,
+                    val_loader,
+                    criterion,
+                    device,
+                    epoch=epoch,
+                    total_epochs=int(training_cfg["epochs"]),
+                    split_name="val",
+                    run_dir=run_dir,
+                    include_predictions=True,
+                )
+                current_lr = float(optimizer.param_groups[0]["lr"])
+                scheduler.step()
 
-            history.extend(
-                [
-                    EpochResult(
-                        epoch=epoch,
-                        split="train",
-                        loss=train_metrics["loss"],
-                        balanced_accuracy=train_metrics["balanced_accuracy"],
-                        f1=train_metrics["f1"],
-                        learning_rate=current_lr,
-                        duration_seconds=train_metrics["duration_seconds"],
-                    ),
-                    EpochResult(
-                        epoch=epoch,
-                        split="val",
-                        loss=val_metrics["loss"],
-                        balanced_accuracy=val_metrics["balanced_accuracy"],
-                        f1=val_metrics["f1"],
-                        learning_rate=current_lr,
-                        duration_seconds=val_metrics["duration_seconds"],
-                    ),
-                ]
-            )
-
-            if tracker is not None:
-                tracker.log_scalar("loss/train", train_metrics["loss"], epoch)
-                tracker.log_scalar("loss/val", val_metrics["loss"], epoch)
-                tracker.log_scalar("balanced_accuracy/train", train_metrics["balanced_accuracy"], epoch)
-                tracker.log_scalar("balanced_accuracy/val", val_metrics["balanced_accuracy"], epoch)
-                tracker.log_scalar("f1/train", train_metrics["f1"], epoch)
-                tracker.log_scalar("f1/val", val_metrics["f1"], epoch)
-                tracker.log_scalar("lr", current_lr, epoch)
-
-            should_replace = best_metrics is None or (
-                val_metrics["balanced_accuracy"] > best_metrics["balanced_accuracy"]
-            )
-            if should_replace:
-                best_metrics = {
-                    "balanced_accuracy": float(val_metrics["balanced_accuracy"]),
-                    "f1": float(val_metrics["f1"]),
-                    "loss": float(val_metrics["loss"]),
-                }
-                best_epoch = epoch
-                best_val_logits = np.asarray(val_metrics["logits"]).copy()
-                best_val_labels = np.asarray(val_metrics["labels"]).copy()
-                torch.save(
-                    {
-                        "epoch": epoch,
-                        "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "scheduler_state_dict": scheduler.state_dict(),
-                        "best_validation_metrics": {
-                            "balanced_accuracy": val_metrics["balanced_accuracy"],
-                            "f1": val_metrics["f1"],
-                            "loss": val_metrics["loss"],
-                        },
-                        "config": effective_config,
-                    },
-                    checkpoint_path,
+                history.extend(
+                    [
+                        EpochResult(
+                            epoch=epoch,
+                            split="train",
+                            loss=train_metrics["loss"],
+                            balanced_accuracy=train_metrics["balanced_accuracy"],
+                            f1=train_metrics["f1"],
+                            learning_rate=current_lr,
+                            duration_seconds=train_metrics["duration_seconds"],
+                        ),
+                        EpochResult(
+                            epoch=epoch,
+                            split="val",
+                            loss=val_metrics["loss"],
+                            balanced_accuracy=val_metrics["balanced_accuracy"],
+                            f1=val_metrics["f1"],
+                            learning_rate=current_lr,
+                            duration_seconds=val_metrics["duration_seconds"],
+                        ),
+                    ]
                 )
 
-            _print_epoch_summary(
-                epoch=epoch,
-                total_epochs=int(training_cfg["epochs"]),
-                train_metrics=train_metrics,
-                val_metrics=val_metrics,
-                current_lr=current_lr,
-                best_epoch=best_epoch,
-                best_metrics=cast(BinaryMetrics, best_metrics),
-            )
-            completed_epochs = epoch
-            stop_decision = overfit_monitor.update(
-                epoch=epoch,
-                train_loss=train_metrics["loss"],
-                val_loss=val_metrics["loss"],
-            )
-            if stop_decision.should_stop:
-                stop_reason = stop_decision.reason
-                print(stop_reason, flush=True)
-                break
+                if tracker is not None:
+                    tracker.log_scalar("loss/train", train_metrics["loss"], epoch)
+                    tracker.log_scalar("loss/val", val_metrics["loss"], epoch)
+                    tracker.log_scalar("balanced_accuracy/train", train_metrics["balanced_accuracy"], epoch)
+                    tracker.log_scalar("balanced_accuracy/val", val_metrics["balanced_accuracy"], epoch)
+                    tracker.log_scalar("f1/train", train_metrics["f1"], epoch)
+                    tracker.log_scalar("f1/val", val_metrics["f1"], epoch)
+                    tracker.log_scalar("lr", current_lr, epoch)
+
+                should_replace = best_metrics is None or (
+                    val_metrics["balanced_accuracy"] > best_metrics["balanced_accuracy"]
+                )
+                if should_replace:
+                    best_metrics = {
+                        "balanced_accuracy": float(val_metrics["balanced_accuracy"]),
+                        "f1": float(val_metrics["f1"]),
+                        "loss": float(val_metrics["loss"]),
+                    }
+                    best_epoch = epoch
+                    best_val_logits = np.asarray(val_metrics["logits"]).copy()
+                    best_val_labels = np.asarray(val_metrics["labels"]).copy()
+                    torch.save(
+                        {
+                            "epoch": epoch,
+                            "model_state_dict": model.state_dict(),
+                            "optimizer_state_dict": optimizer.state_dict(),
+                            "scheduler_state_dict": scheduler.state_dict(),
+                            "best_validation_metrics": {
+                                "balanced_accuracy": val_metrics["balanced_accuracy"],
+                                "f1": val_metrics["f1"],
+                                "loss": val_metrics["loss"],
+                            },
+                            "config": effective_config,
+                        },
+                        checkpoint_path,
+                    )
+
+                _print_epoch_summary(
+                    epoch=epoch,
+                    total_epochs=int(training_cfg["epochs"]),
+                    train_metrics=train_metrics,
+                    val_metrics=val_metrics,
+                    current_lr=current_lr,
+                    best_epoch=best_epoch,
+                    best_metrics=cast(BinaryMetrics, best_metrics),
+                )
+                completed_epochs = epoch
+                stop_decision = overfit_monitor.update(
+                    epoch=epoch,
+                    train_loss=train_metrics["loss"],
+                    val_loss=val_metrics["loss"],
+                )
+                if stop_decision.should_stop:
+                    stop_reason = stop_decision.reason
+                    print(stop_reason, flush=True)
+                    break
     finally:
         if tracker is not None:
             tracker.flush()
