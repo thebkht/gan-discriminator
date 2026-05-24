@@ -2,21 +2,30 @@
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Protocol, Sequence
 
 import numpy as np
 from sklearn.metrics import confusion_matrix
 
+from evaluation import plot_confusion_matrix
+
 try:
-    import matplotlib
-
+    matplotlib = importlib.import_module("matplotlib")
     matplotlib.use("Agg")
-
-    import matplotlib.pyplot as plt
+    plt = importlib.import_module("matplotlib.pyplot")
 except ModuleNotFoundError:
     matplotlib = None
     plt = None
+
+
+class _HistoryRow(Protocol):
+    epoch: int
+    split: str
+    loss: float
+    balanced_accuracy: float
+    f1: float
 
 
 def _smooth(values: Sequence[float], window: int = 5) -> np.ndarray:
@@ -47,13 +56,7 @@ def write_confusion_matrix_artifacts(
     column_totals = normalized.sum(axis=0, keepdims=True)
     np.divide(normalized, np.maximum(column_totals, 1.0), out=normalized, where=column_totals > 0)
 
-    _plot_confusion_matrix(
-        run_path / "confusion_matrix.png",
-        matrix=matrix,
-        class_names=class_names,
-        title="Confusion Matrix",
-        value_format="d",
-    )
+    plot_confusion_matrix(labels, predictions, run_path / "confusion_matrix.png", class_names)
     _plot_confusion_matrix(
         run_path / "confusion_matrix_normalized.png",
         matrix=normalized,
@@ -63,7 +66,7 @@ def write_confusion_matrix_artifacts(
     )
 
 
-def write_results_plot(run_dir: str | Path, history: Iterable[object]) -> None:
+def write_results_plot(run_dir: str | Path, history: Iterable[_HistoryRow]) -> None:
     if plt is None:
         return
     run_path = Path(run_dir)
