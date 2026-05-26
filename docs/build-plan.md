@@ -1,7 +1,7 @@
 # Hybrid Three-Branch GAN Discriminator — Build Plan
 
-> Last updated: 2026-05-22
-> Status: **Week 1 and current Phase 2 code paths are implemented.** The repository now matches the proposal at the Branch A level and partially at the Branch B level. **Week 2+ remains in progress** because Branch C, Phase 3+, Hinge-loss fine-tuning, ensemble experiments, and OOD evaluation are still open.
+> Last updated: 2026-05-26
+> Status: **Week 1 and Week 2 are gate-cleared.** The repository now includes a trained `phase3_a_b_c.pt` checkpoint plus matching run artifacts. **Week 3+ remains in progress** because Phase 4 fine-tuning, ensemble experiments, and OOD evaluation are still open.
 
 > **2 Engineers · 4 Weeks · OOD Robustness Target: 94.4% balanced accuracy**
 
@@ -23,7 +23,7 @@
 | Phase | Where the repo is now | Next gate |
 | ----- | --------------------- | --------- |
 | 1 | CelebA at `data/celeba/img_align_celeba` (202,599 images); Branch A encoder and baseline classifier implemented; flow cache complete at `data/flow_cache` (202,599 `*_flow.pt` files, ~7.0 GB, shape `(2, 64, 64)` float32); `test_flow_precompute_smoke` passing; loader supports same-identity real pairs, cross-identity proxy fakes, singleton-adjacent fallback, and attribute-derived pseudo-identities when true identity labels are unavailable | Keep the saved Branch A baseline and reports aligned with the stronger proxy-task configuration |
-| 2 | Branch B (`models/branch_b.py`) and the full Phase 2 A+B stack are implemented; Run 3 now shares Branch A's encoder, uses the committed 8-D summary `[vel_mean, vel_std, vel_max, vel_min, cos_sim, l2_dist, sign_consistency, abs_vel_mean]`, expands it to 32-D before fusion, and partially unfreezes the shared encoder tail. Branch C (`models/branch_c.py`), `DiscriminatorPhase3`, Hinge loss, flow-aware `adjacent_cache` loading, checkpoint resume helpers, and Phase 3 CLI/trainer wiring are now implemented with golden/freeze/load tests; the remaining open gate is the full `phase3_a_b_c.pt` training run and its report artifacts. | Run the full Phase 3 training/eval path and save `phase3_a_b_c.pt` with gate-clearing metrics |
+| 2 | Branch B (`models/branch_b.py`) and the full Phase 2 A+B stack are implemented; Run 3 now shares Branch A's encoder, uses the committed 8-D summary `[vel_mean, vel_std, vel_max, vel_min, cos_sim, l2_dist, sign_consistency, abs_vel_mean]`, expands it to 32-D before fusion, and partially unfreezes the shared encoder tail. Branch C (`models/branch_c.py`), `DiscriminatorPhase3`, hinge loss, flow-aware `adjacent_cache` loading, checkpoint resume helpers, and Phase 3 CLI/trainer wiring are implemented and trained. `checkpoints/phase3_a_b_c.pt` matches `runs/phase3_a_b_c_w2/benchmark_summary.json`, with the best validation result at epoch `8`: balanced accuracy `0.8741`, F1 `0.9067`, AUC-ROC `0.9484`, loss `0.2726`. | Start Week 3 ensemble work from the trained Phase 3 baseline |
 
 Update this table when a gate flips so the plan stays honest for the next work session.
 
@@ -57,7 +57,7 @@ Update this table when a gate flips so the plan stays honest for the next work s
 **Definition of done (default)**
 
 - Unit tests pass for all affected modules.
-- Output shape assertion exists for every new branch and committed interface: Branch B summary → `(B, 8)`, current Branch B module output → `(B, 32)`, Branch C → `(B, 28)`.
+- Output shape assertion exists for every new branch and committed interface: Branch B summary → `(B, 8)`, current Branch B module output → `(B, 32)`, Branch C → `(B, 28)`, Phase 3 logits → `(B,)`.
 - No frozen branch weights change after an optimizer step — verified by test.
 - Checkpoint saved with epoch, `model_state_dict`, `optimizer_state_dict`, and best metric.
 - `runs/` log updated with the training run for the phase.
@@ -104,7 +104,7 @@ Update this table when a gate flips so the plan stays honest for the next work s
 
 ---
 
-## Week 2 — Branches B & C `[IN PROGRESS]`
+## Week 2 — Branches B & C `[COMPLETE]`
 
 Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel, but the remaining architectural question is whether Branch B's implemented 32-D learned expansion is a temporary Phase 2 convenience or the intended long-term contract.
 
@@ -167,7 +167,9 @@ Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel, but the remainin
   - Branch C output shape `(B, 28)` ✓
   - Full Phase 3 forward pass output `(B, 1)` ✓
   - Branch A + B weights unchanged after Phase 3 optimizer step ✓
-- [ ] Train Branch C; save `checkpoints/phase3_a_b_c.pt`
+- [x] Train Branch C; save `checkpoints/phase3_a_b_c.pt` and matching run reports
+
+**Actual result:** best val balanced acc `0.8741`, F1 `0.9067`, AUC-ROC `0.9484`, loss `0.2726` @ epoch `8` in `runs/phase3_a_b_c_w2/`.
 
 **Gate:** val balanced acc ≥ 83%, F1 ≥ 0.80; Branch A + B freeze verified by test; flow cache still contains exactly 202,599 files after the run.
 
@@ -175,7 +177,7 @@ Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel, but the remainin
 
 ### Week 2 Critical Sync Point
 
-> **End of Week 2** — `phase2_a_b.pt` (Dev 1) and `phase3_a_b_c.pt` (Dev 2) must both exist before any Week 3 work begins. `phase2_a_b.pt` is now ready for handoff; Dev 2 can consume it as soon as Phase 3 wiring starts.
+> **End of Week 2** — cleared. `phase2_a_b.pt` and `phase3_a_b_c.pt` both exist, so Week 3 work can proceed from the trained Phase 3 baseline.
 
 ---
 

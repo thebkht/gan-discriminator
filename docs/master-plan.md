@@ -3,7 +3,7 @@
 > Deepfake Face Detection · Based on Barrington & Farid, CVPR Workshop 2026  
 > Dataset: CelebA (202,599 images) via Kaggle `jessicali9530/celeba-dataset`
 >
-> Doc basis: refreshed on 2026-05-22 from the project proposal
+> Doc basis: refreshed on 2026-05-26 from the project proposal and current repository state
 
 ---
 
@@ -46,9 +46,9 @@ A **hybrid three-branch discriminator** that captures orthogonal signals:
 
 The proposal is the target design, not the current implementation state.
 
-- Implemented now: Branch A baseline, Branch B temporal summary branch, Phase 2 A+B training path, CelebA pair loader, and offline flow precompute
-- Not implemented now: Branch C, Phase 3 / Phase 4 training, Hinge-loss fine-tuning, random-forest ensemble experiments, and OOD evaluation
-- Important delta: the current Phase 2 code expands Branch B's proposal-level `8-D` summary into a learned `32-D` feature before fusion, so the implemented A+B head is `2048 + 32 = 2080`, not the proposal's final `2084-D` three-branch fusion
+- Implemented now: Branch A baseline, Branch B temporal summary branch, Branch C physics branch, Phase 2 and Phase 3 training paths, CelebA pair loader, offline flow precompute, checkpoint helpers, and evaluation metrics/plots
+- Not implemented now: Phase 4 fine-tuning, random-forest ensemble experiments, OOD evaluation, and proposal-parity three-branch fine-tuning
+- Important delta: the current Phase 2/3 code expands Branch B's proposal-level `8-D` summary into a learned `32-D` feature before fusion, so the implemented three-branch head is `2048 + 32 + 28 = 2108`, not the proposal's final `2084-D` fusion contract
 
 ---
 
@@ -103,14 +103,14 @@ Activation: **LeakyReLU(0.2)** throughout.
 
 ### 2.3 Branch B — Spatiotemporal Embedding Derivatives
 
-Operates on a **consecutive frame pair**. Encodes each frame into a 64-D embedding, then computes temporal derivative statistics.
+Operates on a **consecutive frame pair**. The proposal describes a compact embedding CNN, while the current implementation reuses the pretrained `BranchAEncoder` and computes summary statistics in that shared feature space.
 
 ```mermaid
 flowchart LR
-  frame_t["frame_t"] --> CNN1["Embed CNN"]
-  frame_t1["frame_t1"] --> CNN2["Embed CNN"]
-  CNN1 --> e_t["e_t 64-D"]
-  CNN2 --> e_t1["e_t1 64-D"]
+  frame_t["frame_t"] --> CNN1["Shared BranchAEncoder"]
+  frame_t1["frame_t1"] --> CNN2["Shared BranchAEncoder"]
+  CNN1 --> e_t["e_t 2048-D"]
+  CNN2 --> e_t1["e_t1 2048-D"]
   e_t --> VEL["velocity = e_t1 − e_t"]
   e_t1 --> VEL
   VEL --> CUR["curvature = velocity / ‖velocity‖"]
@@ -141,11 +141,12 @@ Total                                → 28-D
 
 ### 2.5 Fusion Head
 
-| Layer    | In → Out   | Activation                       |
-| -------- | ---------- | -------------------------------- |
-| Linear 1 | 2084 → 512 | LeakyReLU(0.2) + Dropout(0.3)    |
-| Linear 2 | 512 → 128  | LeakyReLU(0.2)                   |
-| Linear 3 | 128 → 1    | — (logits; sigmoid at inference) |
+| Contract | Layer    | In → Out   | Activation                       |
+| -------- | -------- | ---------- | -------------------------------- |
+| Proposal | Linear 1 | 2084 → 512 | LeakyReLU(0.2) + Dropout(0.3)    |
+| Current  | Linear 1 | 2108 → 512 | LeakyReLU(0.2) + Dropout(0.3)    |
+| Both     | Linear 2 | 512 → 128  | LeakyReLU(0.2)                   |
+| Both     | Linear 3 | 128 → 1    | — (logits; sigmoid at inference) |
 
 ### 2.6 Phase-by-phase tensor contracts
 
@@ -156,15 +157,16 @@ This section keeps the proposal contract and the current code path separate.
 | Proposal Branch A encoder       | `2048-D` per frame                          | Implemented                            |
 | Proposal Branch B summary       | `8-D` per frame pair                        | Implemented as an intermediate summary |
 | Current Phase 2 Branch B output | `32-D` learned expansion of the 8-D summary | Implemented                            |
-| Proposal Branch C output        | `28-D` per frame pair                       | Not implemented                        |
+| Proposal Branch C output        | `28-D` per frame pair                       | Implemented                            |
 | Proposal final fusion           | `2048 + 8 + 28 = 2084-D`                    | Not implemented                        |
 | Current Phase 2 fusion          | `2048 + 32 = 2080-D`                        | Implemented                            |
+| Current Phase 3 fusion          | `2048 + 32 + 28 = 2108-D`                   | Implemented                            |
 
 ---
 
 ## 3. Build Plan
 
-### Project Checkpoint — 2026-05-22
+### Project Checkpoint — 2026-05-26
 
 Current status from the repository state:
 
@@ -176,7 +178,8 @@ Current status from the repository state:
 - **Week 2 Dev 1 code is now in place.** `models/branch_b.py`, `models/discriminator.py`, `training/phase2_trainer.py`, `training/phase2_train.py`, and `tests/test_model.py` now exist. Branch B's proposal-level 8-D layout and acceleration proxy are locked by a golden regression test, and the current implementation expands that summary to a learned 32-D feature before Phase 2 fusion. Phase 2 also includes a real Branch A freeze test plus Phase 1 encoder load/remap coverage.
 - **Current training runs now use guarded stopping.** Branch A and Phase 2 trainers stop early when validation loss shows sustained overfitting, and each phase also has a branch-specific validation-loss ceiling after warmup.
 - **Phase 2 is gate-cleared.** `checkpoints/phase2_a_b.pt` now exists with `phase == 2`; the saved checkpoint reports best validation metrics of **1.0000 balanced accuracy** and **1.0000 F1** at epoch **2**, and `runs/phase2_a_b/benchmark_summary.json` matches those values.
-- **Week 2+ work is still open beyond Dev 1.** Branch C, Phase 3+, ensemble training, and OOD evaluation are still not implemented in the repository. The remaining open architectural decision is whether later phases should preserve the current learned 32-D Branch B expansion or collapse back to the proposal's direct 8-D fusion contract.
+- **Week 2 Dev 2 training is now complete.** `checkpoints/phase3_a_b_c.pt` exists and matches `runs/phase3_a_b_c_w2/benchmark_summary.json`. The best validation result occurs at epoch **8** with **0.8741 balanced accuracy**, **0.9067 F1**, **0.9484 AUC-ROC**, and **0.2726 loss**, which clears the configured Phase 3 gate.
+- **Week 3 is now unblocked.** Phase 4, ensemble training, and OOD evaluation are still not implemented. The main remaining architectural decision is whether later phases should preserve the current learned 32-D Branch B expansion or collapse back to the proposal's direct 8-D fusion contract.
 
 ### Milestones
 
@@ -217,8 +220,9 @@ gantt
 
 - [x] **Dev 1:** Implement `BranchB_Spatiotemporal` + `DiscriminatorPhase2` (Branch A frozen); smoke-verify load/freeze/tests and Phase 2 training path
 - [x] **Dev 1:** Run the full Phase 2 training job; target ≥88% accuracy; save `checkpoints/phase2_a_b.pt`
-- [ ] **Dev 2:** Finalize flow cache `.pt` files; implement `BranchC_Physics`; train with A+B frozen; target ≥83% accuracy; save `checkpoints/phase3_a_b_c.pt`; implement Hinge loss
-- [ ] **Dev 2:** Build balanced accuracy / F1 / AUC-ROC eval module; checkpoint save/resume
+- [x] **Dev 2:** Run the full Branch C / Phase 3 training job with A+B frozen; target ≥83% accuracy; save `checkpoints/phase3_a_b_c.pt`
+- [x] **Dev 2:** Finalize flow cache `.pt` files; implement `BranchC_Physics`; implement Hinge loss
+- [x] **Dev 2:** Build balanced accuracy / F1 / AUC-ROC eval module; checkpoint save/resume
 
 ### Week 3 — Full Ensemble Fine-tune
 
