@@ -1,7 +1,7 @@
 # Hybrid Three-Branch GAN Discriminator — Build Plan
 
 > Last updated: 2026-05-26
-> Status: **Week 1 and Week 2 are gate-cleared.** The repository now includes a trained `phase3_a_b_c.pt` checkpoint plus matching run artifacts. **Week 3+ remains in progress** because Phase 4 fine-tuning, ensemble experiments, and OOD evaluation are still open.
+> Status: **Week 1 and Week 2 are gate-cleared.** The repository now includes a trained `phase3_a_b_c.pt` checkpoint plus matching run artifacts. **Week 3 remains split**: the Phase 4 fine-tuning path is implemented on the active `2108-D` contract, while branch-combination ensemble experiments and OOD evaluation are still open.
 
 > **2 Engineers · 4 Weeks · OOD Robustness Target: 94.4% balanced accuracy**
 
@@ -13,7 +13,7 @@
 | ----- | ---- | --------------------------- | --------------------------------------------------------------- |
 | 1     | 1    | Setup + Branch A            | Branch A val acc ≥ 77%, F1 ≥ 0.70; flow cache complete         |
 | 2     | 2    | Branches B & C (parallel)   | `phase2_a_b.pt` and `phase3_a_b_c.pt` both saved               |
-| 3     | 3    | Full ensemble fine-tune     | B+C ensemble ≥ 94.4% balanced acc, F1 ≥ 0.93                   |
+| 3     | 3    | Phase 4 fine-tune + separate ensemble follow-up | B+C ensemble ≥ 94.4% balanced acc, F1 ≥ 0.93                   |
 | 4     | 4    | Eval & hardening            | OOD eval complete; final report written                         |
 
 ---
@@ -185,18 +185,18 @@ Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel, but the remainin
 
 ### Dev 1 — End-to-End Fine-tune
 
-**Goal:** All branches unfrozen and fine-tuned together. `phase4_ensemble.pt` saved.
+**Goal:** All branches unfrozen and fine-tuned together on the active `2108-D` fusion contract. `phase4_ensemble.pt` saved.
 
-- [ ] Implement `HybridDiscriminator` (`models/discriminator.py`)
+- [x] Implement `DiscriminatorPhase4` (`models/discriminator.py`)
   - Load `phase3_a_b_c.pt`; unfreeze all branches
-  - Final fusion FC head: 2084 → 512 (LeakyReLU + Dropout(0.3)) → 128 (LeakyReLU) → 1
-- [ ] Implement combined loss (`training/losses.py`): `L_total = 0.7 × L_BCE + 0.3 × L_hinge`
-- [ ] Write Phase 4 fine-tune script (`training/phase4_finetune.py`)
+  - Final fusion FC head stays on the active `2108 → 512 → 128 → 1` contract (`2048 + 32 + 28`)
+- [x] Implement combined loss (`training/losses.py`): `L_total = 0.7 × L_BCE + 0.3 × L_hinge`
+- [x] Write Phase 4 fine-tune script (`training/phase4_finetune.py`)
   - All parameters trainable; Optimizer: Adam (β₁=0.5, β₂=0.999), LR = **5e-5**
   - Scheduler: CosineAnnealingLR; 20 epochs, batch size 64; combined loss
-- [ ] Train full ensemble; save `checkpoints/phase4_ensemble.pt`
-- [ ] Run all 7 ensemble combination experiments (see table below)
-- [ ] Prepare inference script for OOD eval — loads any checkpoint, accepts image directory
+- [ ] Run Phase 4 training and save `checkpoints/phase4_ensemble.pt`
+- [ ] Run all 7 ensemble combination experiments in a separate evaluation branch/scope (see table below)
+- [x] Prepare inference handoff artifact for Week 4 eval — `runs/<run>/inference_contract.json`
 
 **Ensemble experiment matrix:**
 
@@ -218,7 +218,7 @@ Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel, but the remainin
 
 **Goal:** RF classifiers trained for all 7 configs. Per-branch ablation and confusion matrix output complete.
 
-- [ ] Implement `evaluation/ensemble.py`
+- [ ] Implement `evaluation/ensemble.py` in the ensemble-eval branch/scope
   - `extract_branch_outputs(model, dataloader, branch) -> np.ndarray` — shape depends on chosen contract
   - `train_rf_ensemble(features, labels) -> RandomForestClassifier` — `n_estimators=100, random_state=42`
   - `evaluate_ensemble(clf, features, labels) -> dict` — balanced acc, F1, AUC-ROC
@@ -275,7 +275,7 @@ This reference table describes the proposal target. The current repository only 
 | A — CNN Spatial | 2048-D | Static texture & structure (5 conv blocks, SpectralNorm + BN) |
 | B — Spatiotemporal | 8-D | Shared-encoder temporal stats over embed delta: velocity summary + cosine/L2/sign consistency |
 | C — Physics Dynamics | 28-D | Optical flow div/curl/grad (20-D) + HSV photometrics (8-D) |
-| **Concatenated** | **2084-D** | Fusion FC input |
+| **Concatenated (active runtime)** | **2108-D** | Fusion FC input |
 
 ### Hyperparameters
 

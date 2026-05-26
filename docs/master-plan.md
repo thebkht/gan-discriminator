@@ -47,8 +47,9 @@ A **hybrid three-branch discriminator** that captures orthogonal signals:
 The proposal is the target design, not the current implementation state.
 
 - Implemented now: Branch A baseline, Branch B temporal summary branch, Branch C physics branch, Phase 2 and Phase 3 training paths, CelebA pair loader, offline flow precompute, checkpoint helpers, and evaluation metrics/plots
-- Not implemented now: Phase 4 fine-tuning, random-forest ensemble experiments, OOD evaluation, and proposal-parity three-branch fine-tuning
-- Important delta: the current Phase 2/3 code expands Branch B's proposal-level `8-D` summary into a learned `32-D` feature before fusion, so the implemented three-branch head is `2048 + 32 + 28 = 2108`, not the proposal's final `2084-D` fusion contract
+- Implemented now: Phase 4 fine-tuning path, Phase 4 checkpoint metadata, combined BCE+Hinge loss, and inference handoff artifact wiring
+- Not implemented now: random-forest ensemble experiments and OOD evaluation
+- Important delta: the active runtime contract remains `2048 + 32 + 28 = 2108`; proposal-parity `2084-D` fusion is not the current load-compatible path
 
 ---
 
@@ -179,7 +180,7 @@ Current status from the repository state:
 - **Current training runs now use guarded stopping.** Branch A and Phase 2 trainers stop early when validation loss shows sustained overfitting, and each phase also has a branch-specific validation-loss ceiling after warmup.
 - **Phase 2 is gate-cleared.** `checkpoints/phase2_a_b.pt` now exists with `phase == 2`; the saved checkpoint reports best validation metrics of **1.0000 balanced accuracy** and **1.0000 F1** at epoch **2**, and `runs/phase2_a_b/benchmark_summary.json` matches those values.
 - **Week 2 Dev 2 training is now complete.** `checkpoints/phase3_a_b_c.pt` exists and matches `runs/phase3_a_b_c_w2/benchmark_summary.json`. The best validation result occurs at epoch **8** with **0.8741 balanced accuracy**, **0.9067 F1**, **0.9484 AUC-ROC**, and **0.2726 loss**, which clears the configured Phase 3 gate.
-- **Week 3 is now unblocked.** Phase 4, ensemble training, and OOD evaluation are still not implemented. The main remaining architectural decision is whether later phases should preserve the current learned 32-D Branch B expansion or collapse back to the proposal's direct 8-D fusion contract.
+- **Week 3 is now partially implemented.** Phase 4 training is wired on the locked `2108-D` contract. Ensemble experiments and OOD evaluation remain outstanding. The architectural decision is resolved for the current pipeline: preserve the learned `32-D` Branch B expansion through Phase 4.
 
 ### Milestones
 
@@ -226,11 +227,11 @@ gantt
 
 ### Week 3 — Full Ensemble Fine-tune
 
-- [ ] Dev 1: Unfreeze all branches, fine-tune end-to-end with lower LR (5e-5)
+- [x] Dev 1: Unfreeze all branches, fine-tune end-to-end with lower LR (5e-5)
 - [ ] Dev 1: Train independent random forest classifiers per branch pair (B+C recommended)
 - [ ] Dev 1: Run all 7 ensemble combination experiments
 - [ ] Target: **B+C ensemble ≥ 94.4% balanced accuracy, F1 ≥ 0.93**
-- [ ] Save `checkpoints/phase4_ensemble.pt`
+- [ ] Save `checkpoints/phase4_ensemble.pt` from an executed Phase 4 run
 - [ ] Dev 2: Finalize confusion matrix + per-branch ablation module in parallel
 
 ### Week 4 — Eval & Hardening
@@ -333,7 +334,7 @@ deepfake_detector/
 │
 ├── evaluation/
 │   ├── eval.py                      # Balanced accuracy, F1, confusion matrix
-│   ├── ensemble.py                  # Random forest ensemble over branch outputs
+│   ├── inference_handoff.py         # Phase 4 -> Week 4 inference contract artifact
 │   └── ood_eval.py                  # Out-of-domain evaluation
 │
 ├── checkpoints/                     # Saved model weights (gitignored)

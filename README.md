@@ -19,7 +19,9 @@ The codebase is not at full proposal parity yet. Today it includes the completed
 - Implemented: metric computation, checkpointing, confusion-matrix plotting, run summaries, and optional TensorBoard logging
 - Verified: Branch B regression tests, Branch C golden-feature tests, Branch A/B freeze tests, data pipeline tests, overfit-stop unit tests, and Branch A evaluation smoke tests
 - Verified: `checkpoints/phase3_a_b_c.pt` and `runs/phase3_a_b_c_w2/` clear the configured Phase 3 gate at epoch `8` with balanced accuracy `0.8741`, F1 `0.9067`, AUC-ROC `0.9484`, and validation loss `0.2726`
-- Not implemented yet: Phase 4 fine-tuning, RF branch-combination experiments, OOD evaluation, and the final proposal-parity `2048 + 8 + 28 = 2084` fusion contract
+- Implemented: Phase 4 fine-tuning path, full-unfreeze `DiscriminatorPhase4`, combined BCE+Hinge loss, and `inference_contract.json` handoff artifact generation
+- Not implemented yet: RF branch-combination experiments and OOD evaluation
+- Active runtime contract: `2048 + 32 + 28 = 2108`; the proposal-parity `2048 + 8 + 28 = 2084` fusion contract is not the current load-compatible path
 - Historical checkpoint: `checkpoints/phase2_a_b.pt` was trained on the legacy pre-Run 3 Branch B architecture and should not be treated as the current baseline
 
 ## Repository Layout
@@ -79,7 +81,8 @@ The proposal defines a three-branch discriminator over consecutive `64 x 64` RGB
 - Branch A: spatial CNN encoder, `2048-D`
 - Branch B: spatiotemporal derivative summary, `8-D`
 - Branch C: optical-flow + photometric dynamics, `28-D`
-- Final fusion head: concatenated `2084-D -> 512 -> 128 -> 1`
+- Proposal fusion head: concatenated `2084-D -> 512 -> 128 -> 1`
+- Active runtime fusion head: concatenated `2108-D -> 512 -> 128 -> 1`
 
 The intended training order is:
 
@@ -111,7 +114,7 @@ Branch C and Phase 3 in [models/branch_c.py](models/branch_c.py), [models/discri
 - Phase 3 enforces the current cache contract by requiring `include_flow=True` and `pairing_mode="adjacent_cache"` dataloaders, then verifying the cached flow directory before training starts
 - The repository also ships `training/checkpointing.py` and `training/losses.py`, including resume support and a standalone `HingeLoss` module for later phases
 
-This means the current code now reaches the proposal's three-branch structure, but not its final training/evaluation parity. The implemented Phase 3 path still uses the current `32-D` Branch B expansion and BCE training, so the code remains short of the proposal's final `2048 + 8 + 28 = 2084` fused discriminator and later ensemble workflow.
+This means the current code now reaches the proposal's three-branch structure and includes the Phase 4 fine-tuning path, but not the full evaluation parity. The active Phase 3 and Phase 4 path uses the current `32-D` Branch B expansion, so the runtime contract remains `2048 + 32 + 28 = 2108` and the later ensemble workflow is still pending.
 
 ## Dataset Pipeline
 
@@ -446,8 +449,8 @@ Coverage currently includes:
 - Branch C and Phase 3 are implemented and trained, but the current result is still an in-domain proxy task rather than a real deepfake benchmark.
 - Current fake samples are cross-identity proxy negatives, not actual deepfakes.
 - Out-of-domain evaluation is not implemented.
-- Phase 4 fine-tuning and branch-combination ensemble experiments are not implemented.
-- The proposal's direct `2048 + 8 + 28 = 2084` fusion contract is still not the active runtime contract; the current Phase 3 stack uses `2048 + 32 + 28 = 2108`.
+- Branch-combination ensemble experiments are not implemented in this branch.
+- The proposal's direct `2048 + 8 + 28 = 2084` fusion contract is still not the active runtime contract; the current Phase 3 and Phase 4 stack uses `2048 + 32 + 28 = 2108`.
 - If `identity_CelebA.txt` is missing, real pairs fall back to adjacent-image pairing.
 - If `identity_CelebA.txt` is missing, fake pairs fall back to deterministic distant-index pairing.
 - `phase2_a_b.pt` may be a legacy pre-Run 3 checkpoint; verify the checkpoint provenance before treating it as a Phase 3 base.
