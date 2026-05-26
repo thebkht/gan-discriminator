@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import unittest
 from pathlib import Path
 
@@ -11,13 +12,17 @@ from models import (
     BranchC_Physics,
     DiscriminatorPhase2,
     DiscriminatorPhase3,
+    DiscriminatorPhase4,
     load_phase2_checkpoint,
     load_phase2_into_phase3,
     load_phase3_checkpoint,
+    load_phase3_into_phase4,
     load_pretrained_branch_a,
 )
 from models.branch_b import SUMMARY_FEATURE_NAMES, _scalar_stats
-from training.losses import HingeLoss
+from models.discriminator import FUSION_DIM_2108
+from evaluation.inference_handoff import write_inference_contract
+from training.losses import CombinedBCEHingeLoss, HingeLoss
 
 
 # GOLDEN_BRANCH_B_SUMMARY is a snapshot of the committed 8-D summary at seed 0 — not a
@@ -443,3 +448,78 @@ class LossTestCase(unittest.TestCase):
         loss = HingeLoss()(logits, labels)
 
         self.assertAlmostEqual(float(loss.item()), 0.5, places=6)
+
+    def test_combined_bce_hinge_loss_matches_weighted_sum(self) -> None:
+        logits = torch.tensor([2.0, -2.0, 0.0, 0.0], dtype=torch.float32)
+        labels = torch.tensor([0.0, 1.0, 0.0, 1.0], dtype=torch.float32)
+
+        criterion = CombinedBCEHingeLoss(bce_weight=0.7, hinge_weight=0.3)
+        loss = criterion(logits, labels)
+        expected = (0.7 * torch.nn.BCEWithLogitsLoss()(logits, labels)) + (0.3 * HingeLoss()(logits, labels))
+
+        self.assertAlmostEqual(float(loss.item()), float(expected.item()), places=6)
+
+
+class DiscriminatorPhase4TestCase(unittest.TestCase):
+    def _phase3_checkpoint(self) -> Path:
+        phase3_model = DiscriminatorPhase3()
+        checkpoint_path = Path("tests/_phase3_for_phase4_tmp_ckpt.pt")
+        torch.save(
+            {
+                "phase": 3,
+                "epoch": 8,
+                "model_state_dict": phase3_model.state_dict(),
+                "optimizer_state_dict": {},
+                "scheduler_state_dict": {},
+                "best_validation_metrics": {"balanced_accuracy": 0.87, "f1": 0.90, "loss": 0.27},
+                "metadata": {"fusion_contract": "2108"},
+            },
+            checkpoint_path,
+        )
+        self.addCleanup(lambda: checkpoint_path.unlink(missing_ok=True))
+        return checkpoint_path
+
+    def test_phase4_loads_phase3_weights_and_unfreezes_all(self) -> None:
+        checkpoint_path = self._phase3_checkpoint()
+        model = DiscriminatorPhase4()
+
+        metadata = load_phase3_into_phase4(model, checkpoint_path)
+
+        self.assertEqual(metadata["fusion_contract"], "2108")
+        for parameter in model.parameters():
+            self.assertTrue(parameter.requires_grad)
+
+    def test_phase4_forward_with_branch_features_shapes(self) -> None:
+        model = DiscriminatorPhase4()
+        frame_a = torch.randn(4, 3, 64, 64)
+        frame_b = torch.randn(4, 3, 64, 64)
+        flow = torch.randn(4, 2, 64, 64)
+
+        outputs = model.forward_with_branch_features(frame_a, frame_b, flow)
+
+        self.assertEqual(tuple(outputs["a"].shape), (4, 2048))
+        self.assertEqual(tuple(outputs["b"].shape), (4, 32))
+        self.assertEqual(tuple(outputs["c"].shape), (4, 28))
+        self.assertEqual(tuple(outputs["logit"].shape), (4,))
+        self.assertEqual(model.fusion_dim, FUSION_DIM_2108)
+
+    def test_inference_contract_writer_emits_expected_schema(self) -> None:
+        run_dir = Path("tests/_phase4_inference_contract")
+        run_dir.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(lambda: shutil.rmtree(run_dir, ignore_errors=True))
+
+        artifact_path = write_inference_contract(
+            run_dir,
+            checkpoint_path="checkpoints/phase4_ensemble.pt",
+            fusion_contract="2108",
+            branch_dims={"a": 2048, "b": 32, "c": 28},
+            pairing_mode="adjacent_cache",
+            include_flow=True,
+            recommended_combo="B+C",
+            recommended_combo_gate_met=False,
+        )
+
+        payload = artifact_path.read_text(encoding="utf-8")
+        self.assertIn('"fusion_contract": "2108"', payload)
+        self.assertIn('"fusion_dim": 2108', payload)
+        self.assertIn('"recommended_combo": "B+C"', payload)
