@@ -20,6 +20,7 @@ The codebase is not at full proposal parity yet. Today it includes the completed
 - Verified: Branch B regression tests, Branch C golden-feature tests, Branch A/B freeze tests, data pipeline tests, overfit-stop unit tests, and Branch A evaluation smoke tests
 - Verified: `checkpoints/phase3_a_b_c.pt` and `runs/phase3_a_b_c_w2/` clear the configured Phase 3 gate at epoch `8` with balanced accuracy `0.8741`, F1 `0.9067`, AUC-ROC `0.9484`, and validation loss `0.2726`
 - Implemented: Phase 4 fine-tuning path, staged-unfreeze `DiscriminatorPhase4`, fake-positive asymmetric BCE+hinge loss, and `inference_contract.json` handoff artifact generation
+- Verified: the final Phase 4 run improved balanced accuracy only marginally (`0.8790 -> 0.8850`) and AUC-ROC (`0.9480 -> 0.9499`), but reduced F1 (`0.9072 -> 0.8955`) and real-class TNR (`0.78 -> 0.72`); Phase 3 is the current best deployment candidate under the balanced objective
 - Not implemented yet: RF branch-combination experiments and OOD evaluation
 - Active runtime contract: `2048 + 32 + 28 = 2108`; the proposal-parity `2048 + 8 + 28 = 2084` fusion contract is not the current load-compatible path
 - Historical checkpoint: `checkpoints/phase2_a_b.pt` was trained on the legacy pre-Run 3 Branch B architecture and should not be treated as the current baseline
@@ -125,6 +126,7 @@ Phase 4 in [models/discriminator.py](models/discriminator.py), [training/phase4_
 - Training uses staged unfreezing: fusion head first, Branch B expander + Branch C next, then the last two Branch A blocks at a lower LR
 - The Phase 4 loss is `AsymmetricCombinedLoss`, which keeps the repository's fake-positive logit convention and upweights real-class mistakes with `real_weight`
 - The old standalone `CombinedBCEHingeLoss` remains available for tests and comparison, but it is not the active Phase 4 trainer loss
+- Final Phase 4 evaluation did not become the deployment path: it increased fake recall (`TPR 0.94 -> 0.97`) while lowering real specificity (`TNR 0.78 -> 0.72`) and F1, consistent with overfitting the proxy training distribution rather than improving generalization
 
 ## Dataset Pipeline
 
@@ -444,7 +446,7 @@ The Phase 2 trainer uses:
 - Balanced accuracy: `>= 0.88`
 - F1: `>= 0.88`
 
-These are still in-domain proxy-task gates, not realistic deepfake benchmarks. The proposal's headline `94.4%` balanced-accuracy result refers to the recommended B+C ensemble on difficult OOD content, which this repository does not implement yet.
+These are still in-domain proxy-task gates, not realistic deepfake benchmarks. The proposal's headline `94.4%` balanced-accuracy result refers to the recommended B+C ensemble on difficult OOD content, which this repository has not reproduced yet.
 
 ## Tests
 
@@ -477,6 +479,7 @@ Coverage currently includes:
 ## Limitations
 
 - Branch C and Phase 3 are implemented and trained, but the current result is still an in-domain proxy task rather than a real deepfake benchmark.
+- Phase 4 fine-tuning is implemented and has been run, but its asymmetric loss worsened the TNR/TPR balance and should not replace the Phase 3 checkpoint for deployment-style evaluation.
 - Current fake samples are cross-identity proxy negatives, not actual deepfakes.
 - Out-of-domain evaluation is not implemented.
 - Branch-combination ensemble experiments are not implemented in this branch.
@@ -492,7 +495,7 @@ Coverage currently includes:
 
 The planned next steps are:
 
-1. Run the staged Phase 4 fine-tuning job and save `checkpoints/phase4_ensemble.pt`.
-2. Decide whether Branch B should stay at the current learned `32-D` expansion or be reduced back to the proposal's direct `8-D` fusion contract.
-3. Replace cross-identity proxy negatives with stronger fake-generation sources.
-4. Add out-of-domain evaluation and branch-combination experiments, especially the proposal's recommended B+C ensemble.
+1. Run the RF branch-combination ensemble experiments, with B+C as the priority configuration.
+2. Sweep decision thresholds on the Phase 3 checkpoint to recover the best TNR/TPR operating point.
+3. Add out-of-domain evaluation on real deepfake data; this is the only meaningful test of the proposal's `94.4%` claim.
+4. Replace cross-identity proxy negatives with stronger fake-generation sources.

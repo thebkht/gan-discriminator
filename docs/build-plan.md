@@ -1,7 +1,7 @@
 # Hybrid Three-Branch GAN Discriminator — Build Plan
 
 > Last updated: 2026-05-28
-> Status: **Week 1 and Week 2 are gate-cleared.** The repository now includes a trained `phase3_a_b_c.pt` checkpoint plus matching run artifacts. **Week 3 remains split**: the Phase 4 fine-tuning path is implemented on the active `2108-D` contract, while branch-combination ensemble experiments and OOD evaluation are still open.
+> Status: **Week 1 and Week 2 are gate-cleared.** The repository now includes a trained `phase3_a_b_c.pt` checkpoint plus matching run artifacts. **Week 3 Phase 4 has been executed and is not the deployment candidate**: it marginally improves balanced accuracy/AUC but worsens F1 and real-class TNR. RF ensemble experiments, threshold sweep, and OOD evaluation are now the priority.
 
 > **2 Engineers · 4 Weeks · OOD Robustness Target: 94.4% balanced accuracy**
 
@@ -13,7 +13,7 @@
 | ----- | ---- | --------------------------- | --------------------------------------------------------------- |
 | 1     | 1    | Setup + Branch A            | Branch A val acc ≥ 77%, F1 ≥ 0.70; flow cache complete         |
 | 2     | 2    | Branches B & C (parallel)   | `phase2_a_b.pt` and `phase3_a_b_c.pt` both saved               |
-| 3     | 3    | Phase 4 fine-tune + separate ensemble follow-up | B+C ensemble ≥ 94.4% balanced acc, F1 ≥ 0.93                   |
+| 3     | 3    | Phase 4 fine-tune + separate ensemble follow-up | Phase 4 characterized; B+C ensemble remains open               |
 | 4     | 4    | Eval & hardening            | OOD eval complete; final report written                         |
 
 ---
@@ -23,7 +23,7 @@
 | Phase | Where the repo is now | Next gate |
 | ----- | --------------------- | --------- |
 | 1 | CelebA at `data/celeba/img_align_celeba` (202,599 images); Branch A encoder and baseline classifier implemented; flow cache complete at `data/flow_cache` (202,599 `*_flow.pt` files, ~7.0 GB, shape `(2, 64, 64)` float32); `test_flow_precompute_smoke` passing; loader supports same-identity real pairs, cross-identity proxy fakes, singleton-adjacent fallback, and attribute-derived pseudo-identities when true identity labels are unavailable | Keep the saved Branch A baseline and reports aligned with the stronger proxy-task configuration |
-| 2 | Branch B (`models/branch_b.py`) and the full Phase 2 A+B stack are implemented; Run 3 now shares Branch A's encoder, uses the committed 8-D summary `[vel_mean, vel_std, vel_max, vel_min, cos_sim, l2_dist, sign_consistency, abs_vel_mean]`, expands it to 32-D before fusion, and partially unfreezes the shared encoder tail. Branch C (`models/branch_c.py`), `DiscriminatorPhase3`, hinge loss, flow-aware `adjacent_cache` loading, checkpoint resume helpers, and Phase 3 CLI/trainer wiring are implemented and trained. `checkpoints/phase3_a_b_c.pt` matches `runs/phase3_a_b_c_w2/benchmark_summary.json`, with the best validation result at epoch `8`: balanced accuracy `0.8741`, F1 `0.9067`, AUC-ROC `0.9484`, loss `0.2726`. Phase 3/4 comparison eval keeps adjacent-cache flow valid and balances evaluation rows by class. | Run staged Phase 4 from the trained Phase 3 baseline |
+| 2 | Branch B (`models/branch_b.py`) and the full Phase 2 A+B stack are implemented; Run 3 now shares Branch A's encoder, uses the committed 8-D summary `[vel_mean, vel_std, vel_max, vel_min, cos_sim, l2_dist, sign_consistency, abs_vel_mean]`, expands it to 32-D before fusion, and partially unfreezes the shared encoder tail. Branch C (`models/branch_c.py`), `DiscriminatorPhase3`, hinge loss, flow-aware `adjacent_cache` loading, checkpoint resume helpers, and Phase 3 CLI/trainer wiring are implemented and trained. `checkpoints/phase3_a_b_c.pt` matches `runs/phase3_a_b_c_w2/benchmark_summary.json`, with the best validation result at epoch `8`: balanced accuracy `0.8741`, F1 `0.9067`, AUC-ROC `0.9484`, loss `0.2726`. Phase 3/4 comparison eval keeps adjacent-cache flow valid and balances evaluation rows by class. Final Phase 4 results are balanced accuracy `0.8850`, F1 `0.8955`, AUC-ROC `0.9499`, TNR `0.72`, and TPR `0.97`, so Phase 3 remains the better deployment candidate under the balanced objective. | Run RF ensemble and Phase 3 threshold sweep |
 
 Update this table when a gate flips so the plan stays honest for the next work session.
 
@@ -198,7 +198,9 @@ Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel, but the remainin
   - Stage 3: Branch A last two blocks, LR = **5e-6**
   - Scheduler: CosineAnnealingLR; 30 epochs, batch size 64; asymmetric combined loss
   - Early stopping is stage-aware: Stage 1/2 plateau advances to the next stage, while Stage 3 plateau can end the full run
-- [ ] Run Phase 4 training and save `checkpoints/phase4_ensemble.pt`
+- [x] Run Phase 4 training and save `checkpoints/phase4_ensemble.pt`
+  - Final comparison: Phase 3 `0.8790` balanced accuracy / `0.9072` F1 / `0.9480` AUC-ROC / `0.78` TNR / `0.94` TPR; Phase 4 `0.8850` balanced accuracy / `0.8955` F1 / `0.9499` AUC-ROC / `0.72` TNR / `0.97` TPR
+  - Interpretation: asymmetric loss pushed the model further toward fake predictions on the imbalanced `adjacent_cache` eval distribution, so Phase 4 is not the current deployment candidate
 - [ ] Run all 7 ensemble combination experiments in a separate evaluation branch/scope (see table below)
 - [x] Prepare inference handoff artifact for Week 4 eval — `runs/<run>/inference_contract.json`
 
@@ -214,7 +216,7 @@ Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel, but the remainin
 | **6** | **B + C** | **Random Forest** ⭐ |
 | 7 | A + B + C | Random Forest |
 
-**Gate:** B+C ensemble val balanced acc ≥ 94.4%, F1 ≥ 0.93.
+**Gate:** B+C ensemble val balanced acc ≥ 94.4%, F1 ≥ 0.93. The Phase 4 fine-tune did not clear the balanced deployment objective; use Phase 3 as the neural checkpoint baseline for threshold sweeps.
 
 ---
 
@@ -227,6 +229,7 @@ Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel, but the remainin
   - `train_rf_ensemble(features, labels) -> RandomForestClassifier` — `n_estimators=100, random_state=42`
   - `evaluate_ensemble(clf, features, labels) -> dict` — balanced acc, F1, AUC-ROC
 - [ ] Run RF ensemble for all 7 branch combinations on held-out test split
+- [ ] Run threshold sweep on the Phase 3 checkpoint to select a better TNR/TPR operating point
 - [ ] Per-branch ablation: forward each branch independently, zero others, compute balanced acc / F1 / AUC-ROC
 - [ ] Save confusion matrices for all 7 configs to `runs/ensemble_ablation/`
 
@@ -240,7 +243,7 @@ Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel, but the remainin
 
 - [ ] Finalize all 7 ensemble results table; confirm B+C is the deployment-recommended config
 - [ ] Architecture review: no orphaned branches, no unbounded tensor ops, no missing gradient guards
-- [ ] Support OOD eval — load `phase4_ensemble.pt` via inference script, accept image dir, output per-image scores
+- [ ] Support OOD eval — load Phase 3 as the neural baseline and Phase 4 as a characterized comparison checkpoint, accept image dir, output per-image scores
 
 ### Dev 2 — OOD Eval, Profiling, Report
 
@@ -270,7 +273,7 @@ Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel, but the remainin
 
 ## Architecture Reference
 
-This reference table describes the proposal target. The current repository only implements Branch A and the A+B Phase 2 subset, where Branch B is expanded to `32-D` before fusion.
+This reference table describes the proposal target alongside the active repository contract. The current repository implements Branch A, Phase 2 A+B, Phase 3 A+B+C, and Phase 4 fine-tuning, with Branch B expanded to `32-D` before fusion.
 
 ### Branch Dimensions
 
@@ -302,7 +305,7 @@ This reference table describes the proposal target. The current repository only 
 | `phase1_branch_a_best.pt` | 1 | Branch A conv + FC | Gate cleared: acc ≥ 77%, F1 ≥ 0.70 |
 | `phase2_a_b.pt` | 2 | Current Phase 2 baseline in this workspace; verify provenance before reuse because older legacy Phase 2 runs also exist locally | Gate cleared in prior run: acc ≥ 88%, F1 ≥ 0.88 |
 | `phase3_a_b_c.pt` | 3 | A + B (frozen) + Branch C + FC | Gate cleared at epoch 8: balanced acc `0.8741`, F1 `0.9067`, AUC-ROC `0.9484`, loss `0.2726` |
-| `phase4_ensemble.pt` | 4 | Staged fine-tune: fusion-only → B+C → Branch A tail | Not created yet; target B+C ≥ 94.4%, F1 ≥ 0.93 |
+| `phase4_ensemble.pt` | 4 | Staged fine-tune: fusion-only → B+C → Branch A tail | Created and characterized: balanced acc `0.8850`, F1 `0.8955`, AUC-ROC `0.9499`, TNR `0.72`, TPR `0.97`; not preferred over Phase 3 for balanced deployment |
 
 ---
 

@@ -48,6 +48,7 @@ The proposal is the target design, not the current implementation state.
 
 - Implemented now: Branch A baseline, Branch B temporal summary branch, Branch C physics branch, Phase 2 and Phase 3 training paths, CelebA pair loader, offline flow precompute, checkpoint helpers, and evaluation metrics/plots
 - Implemented now: Phase 4 fine-tuning path, Phase 4 checkpoint metadata, staged unfreezing, fake-positive asymmetric BCE+hinge loss, and inference handoff artifact wiring
+- Current checkpoint choice: Phase 3 is the best deployment-style candidate under the balanced objective; the final Phase 4 run improved balanced accuracy/AUC only slightly but lowered F1 and real-class TNR
 - Not implemented now: random-forest ensemble experiments and OOD evaluation
 - Important delta: the active runtime contract remains `2048 + 32 + 28 = 2108`; proposal-parity `2084-D` fusion is not the current load-compatible path
 
@@ -180,7 +181,7 @@ Current status from the repository state:
 - **Current training runs now use guarded stopping.** Branch A and Phase 2 trainers stop early when validation loss shows sustained overfitting, and each phase also has a branch-specific validation-loss ceiling after warmup.
 - **Phase 2 is gate-cleared.** `checkpoints/phase2_a_b.pt` now exists with `phase == 2`; the saved checkpoint reports best validation metrics of **1.0000 balanced accuracy** and **1.0000 F1** at epoch **2**, and `runs/phase2_a_b/benchmark_summary.json` matches those values.
 - **Week 2 Dev 2 training is now complete.** `checkpoints/phase3_a_b_c.pt` exists and matches `runs/phase3_a_b_c_w2/benchmark_summary.json`. The best validation result occurs at epoch **8** with **0.8741 balanced accuracy**, **0.9067 F1**, **0.9484 AUC-ROC**, and **0.2726 loss**, which clears the configured Phase 3 gate.
-- **Week 3 is now partially implemented.** Phase 4 training is wired on the locked `2108-D` contract with stage-aware early stopping across a 30-epoch plan: 10 fusion-only epochs, 10 Branch B+C epochs, then 10 Branch A-tail epochs. Ensemble experiments and OOD evaluation remain outstanding. The architectural decision is resolved for the current pipeline: preserve the learned `32-D` Branch B expansion through Phase 4.
+- **Week 3 Phase 4 has been executed.** Phase 4 uses the locked `2108-D` contract with stage-aware early stopping across a 30-epoch plan: 10 fusion-only epochs, 10 Branch B+C epochs, then 10 Branch A-tail epochs. Final comparison: Phase 3 `0.8790` balanced accuracy / `0.9072` F1 / `0.9480` AUC-ROC / `0.78` TNR / `0.94` TPR; Phase 4 `0.8850` balanced accuracy / `0.8955` F1 / `0.9499` AUC-ROC / `0.72` TNR / `0.97` TPR. The asymmetric fine-tune increased fake recall but worsened real specificity, so RF ensemble experiments, Phase 3 threshold sweep, and OOD evaluation are now the priority.
 
 ### Milestones
 
@@ -228,15 +229,17 @@ gantt
 ### Week 3 — Full Ensemble Fine-tune
 
 - [x] Dev 1: Unfreeze all branches, fine-tune end-to-end with lower LR (5e-5)
+- [x] Dev 1: Characterize Phase 4 result; Phase 3 remains the current deployment candidate because Phase 4 lowered F1 and TNR
 - [ ] Dev 1: Train independent random forest classifiers per branch pair (B+C recommended)
 - [ ] Dev 1: Run all 7 ensemble combination experiments
 - [ ] Target: **B+C ensemble ≥ 94.4% balanced accuracy, F1 ≥ 0.93**
-- [ ] Save `checkpoints/phase4_ensemble.pt` from an executed Phase 4 run
+- [x] Save `checkpoints/phase4_ensemble.pt` from an executed Phase 4 run
 - [ ] Dev 2: Finalize confusion matrix + per-branch ablation module in parallel
 
 ### Week 4 — Eval & Hardening
 
 - [ ] Evaluate on out-of-distribution test sets (style transfer, diffusion-generated faces)
+- [ ] Run threshold sweep on Phase 3 checkpoint to select the best TNR/TPR operating point
 - [ ] Run full ablation: each branch independently, all pairs, full triple
 - [ ] Profile inference time; optimize Branch C flow pre-computation
 - [ ] Write final eval report
@@ -264,8 +267,8 @@ Two developers, four weeks, split by model vs. data/eval ownership.
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 1    | Project scaffold, `config.yaml`, requirements, experiment tracking setup; `BranchA_CNN` + `DiscriminatorPhase1`; core training loop (`trainer.py`), BCE loss; unit tests; train Branch A; save `phase1_branch_a_best.pt` |
 | 2    | `BranchB_Spatiotemporal` + `DiscriminatorPhase2` (Branch A frozen); Phase 2 training script; full-gate Branch B training complete; `phase2_a_b.pt` ready for Dev 2 consumption                                           |
-| 3    | 30-epoch staged ensemble fine-tune with asymmetric BCE+hinge loss tuning; save `phase4_ensemble.pt`                                                                                                                        |
-| 4    | All 7 ensemble combination experiments; architecture review; support OOD eval                                                                                                                                            |
+| 3    | 30-epoch staged ensemble fine-tune with asymmetric BCE+hinge loss tuning; save and characterize `phase4_ensemble.pt`; keep Phase 3 as the balanced checkpoint baseline                                                     |
+| 4    | All 7 ensemble combination experiments; Phase 3 threshold sweep; architecture review; support OOD eval                                                                                                                   |
 
 **Dev 2 — Data, physics & evaluation**
 
@@ -298,7 +301,7 @@ sequenceDiagram
   D1->>D2: phase2_a_b.pt
   D2->>D1: phase3_a_b_c.pt
   Note over D1,D2: End of Week 3
-  D1->>D2: phase4_ensemble.pt
+  D1->>D2: phase4_ensemble.pt plus Phase 3 baseline recommendation
   Note over D1,D2: End of Week 4
   D2->>D1: OOD eval results + final report
 ```
@@ -466,6 +469,8 @@ L_total = α · L_BCE_weighted + (1 − α) · L_hinge_asymmetric      α = 0.7
 
 The implemented Phase 4 loss uses the repository's fake-positive logit convention (`label 1 = fake`) and upweights real-class mistakes with `real_weight=1.5`. Its hinge term pushes real logits below `-margin` and fake logits above `margin`; the current default margin is `0.8`.
 
+Final Phase 4 evaluation shows this loss did not fix the real/fake operating-point imbalance on the proxy task. TNR dropped from `0.78` to `0.72` while TPR rose from `0.94` to `0.97`, and F1 fell from `0.9072` to `0.8955`. Treat this as a characterized experiment, not the preferred deployment checkpoint.
+
 ---
 
 ## 9. Evaluation & Metrics
@@ -511,6 +516,8 @@ To validate OOD robustness, evaluate on:
 | A + B + C full ensemble          | 89.5%       | 89.5%       | 0.86     | Note: lower than B+C |
 
 > **Insight from the proposal:** the full A+B+C ensemble underperforms B+C because Branch A introduces in-distribution bias that dilutes the OOD robustness of the physics+temporal signal. B+C is therefore the deployment-recommended configuration in the proposal, pending reproduction in this repository.
+
+> **Current repo result:** the neural Phase 4 A+B+C fine-tune did not improve the balanced deployment objective enough to replace Phase 3. Phase 3 should be the baseline checkpoint for threshold sweeps while the RF B+C ensemble is evaluated.
 
 ---
 
