@@ -43,6 +43,8 @@ from training.trainer import (
 @dataclass
 class EpochResult:
     epoch: int
+    stage: str
+    stage_epoch: int
     split: str
     loss: float
     balanced_accuracy: float
@@ -54,6 +56,7 @@ class EpochResult:
 @dataclass(frozen=True)
 class Phase4Stage:
     name: str
+    planned_epochs: int
     branch_a_train_last_n: int
     branch_b_expander: bool
     branch_c: bool
@@ -106,44 +109,66 @@ def _serialize_history(path: Path, history: list[EpochResult]) -> None:
     path.write_text(json.dumps([asdict(entry) for entry in history], indent=2), encoding="utf-8")
 
 
-def _phase4_stage_for_epoch(epoch: int, phase4_cfg: Dict[str, Any], *, total_branch_a_blocks: int) -> Phase4Stage:
+def _phase4_stage_sequence(phase4_cfg: Dict[str, Any], *, total_branch_a_blocks: int) -> list[Phase4Stage]:
     stage_cfg = _as_str_key_mapping(phase4_cfg.get("staged_unfreezing", {}), context="phase4.staged_unfreezing")
     base_lr = _as_float(phase4_cfg["learning_rate"], context="phase4.learning_rate")
+    total_epochs = int(phase4_cfg["epochs"])
     if not bool(stage_cfg.get("enabled", True)):
-        return Phase4Stage(
-            name="all_branches",
-            branch_a_train_last_n=total_branch_a_blocks,
-            branch_b_expander=True,
-            branch_c=True,
-            learning_rate=base_lr,
-        )
+        return [
+            Phase4Stage(
+                name="all_branches",
+                planned_epochs=total_epochs,
+                branch_a_train_last_n=total_branch_a_blocks,
+                branch_b_expander=True,
+                branch_c=True,
+                learning_rate=base_lr,
+            )
+        ]
 
     fusion_epochs = int(stage_cfg.get("fusion_epochs", 10))
     branches_bc_epochs = int(stage_cfg.get("branches_bc_epochs", 10))
+    branch_a_epochs = total_epochs - fusion_epochs - branches_bc_epochs
     branch_a_train_last_n = int(stage_cfg.get("branch_a_train_last_n", 2))
-    if epoch <= fusion_epochs:
-        return Phase4Stage(
+    if fusion_epochs <= 0 or branches_bc_epochs <= 0 or branch_a_epochs <= 0:
+        raise ValueError(
+            "Phase 4 staged_unfreezing requires positive stage lengths; "
+            f"got fusion={fusion_epochs}, branches_bc={branches_bc_epochs}, branch_a={branch_a_epochs}"
+        )
+    return [
+        Phase4Stage(
             name="fusion_only",
+            planned_epochs=fusion_epochs,
             branch_a_train_last_n=0,
             branch_b_expander=False,
             branch_c=False,
             learning_rate=_as_float(stage_cfg.get("fusion_lr", base_lr), context="phase4.staged_unfreezing.fusion_lr"),
-        )
-    if epoch <= fusion_epochs + branches_bc_epochs:
-        return Phase4Stage(
+        ),
+        Phase4Stage(
             name="branches_bc",
+            planned_epochs=branches_bc_epochs,
             branch_a_train_last_n=0,
             branch_b_expander=True,
             branch_c=True,
             learning_rate=_as_float(stage_cfg.get("branches_bc_lr", base_lr), context="phase4.staged_unfreezing.branches_bc_lr"),
-        )
-    return Phase4Stage(
-        name="branch_a_tail",
-        branch_a_train_last_n=branch_a_train_last_n,
-        branch_b_expander=True,
-        branch_c=True,
-        learning_rate=_as_float(stage_cfg.get("branch_a_lr", base_lr), context="phase4.staged_unfreezing.branch_a_lr"),
-    )
+        ),
+        Phase4Stage(
+            name="branch_a_tail",
+            planned_epochs=branch_a_epochs,
+            branch_a_train_last_n=branch_a_train_last_n,
+            branch_b_expander=True,
+            branch_c=True,
+            learning_rate=_as_float(stage_cfg.get("branch_a_lr", base_lr), context="phase4.staged_unfreezing.branch_a_lr"),
+        ),
+    ]
+
+
+def _phase4_stage_for_epoch(epoch: int, phase4_cfg: Dict[str, Any], *, total_branch_a_blocks: int) -> Phase4Stage:
+    remaining_epoch = epoch
+    for stage in _phase4_stage_sequence(phase4_cfg, total_branch_a_blocks=total_branch_a_blocks):
+        if remaining_epoch <= stage.planned_epochs:
+            return stage
+        remaining_epoch -= stage.planned_epochs
+    raise ValueError(f"Epoch {epoch} exceeds configured Phase 4 epochs")
 
 
 def _apply_phase4_stage(model: DiscriminatorPhase4, optimizer: Adam, stage: Phase4Stage) -> None:
@@ -312,7 +337,8 @@ def train_phase4(
     phase3_path = checkpoints_dir / str(phase4_cfg["pretrained_phase3"])
     phase3_metadata = load_phase3_into_phase4(model, phase3_path)
     model = model.to(device)
-    initial_stage = _phase4_stage_for_epoch(1, phase4_cfg, total_branch_a_blocks=len(model.branch_a.features))
+    stage_sequence = _phase4_stage_sequence(phase4_cfg, total_branch_a_blocks=len(model.branch_a.features))
+    initial_stage = stage_sequence[0]
     model.set_phase4_trainability(
         branch_a_train_last_n=initial_stage.branch_a_train_last_n,
         branch_b_expander=initial_stage.branch_b_expander,
@@ -381,18 +407,24 @@ def train_phase4(
     overfit_monitor = OverfitStopMonitor(_resolve_early_stopping(phase4_cfg))
     val_metric_monitor = ValMetricEarlyStop(_resolve_val_metric_early_stopping(phase4_cfg))
     stop_reason: Optional[str] = None
+    stage_events: list[dict[str, Any]] = []
     targets = _as_str_key_mapping(phase4_cfg["targets"], context="phase4.targets")
     upstream_phase2 = _load_upstream_summary(runs_dir, phase=2, preferred_runs=("phase2_a_b_30ep", "phase2_a_b_run3", "phase2_a_b"))
     upstream_phase3 = _load_upstream_summary(runs_dir, phase=3, preferred_runs=("phase3_a_b_c_w2",))
 
     try:
         with suppress_console_input():
+            stage_index = 0
+            consumed_epochs = 0
+            while stage_index < len(stage_sequence) and start_epoch > consumed_epochs + stage_sequence[stage_index].planned_epochs:
+                consumed_epochs += stage_sequence[stage_index].planned_epochs
+                stage_index += 1
+            stage_epoch = max(1, start_epoch - consumed_epochs)
+
             for epoch in range(start_epoch, int(phase4_cfg["epochs"]) + 1):
-                stage = _phase4_stage_for_epoch(
-                    epoch,
-                    phase4_cfg,
-                    total_branch_a_blocks=len(model.branch_a.features),
-                )
+                if stage_index >= len(stage_sequence):
+                    break
+                stage = stage_sequence[stage_index]
                 _apply_phase4_stage(model, optimizer, stage)
                 train_metrics, _, _ = _run_epoch(
                     model,
@@ -422,8 +454,28 @@ def train_phase4(
                 scheduler.step()
                 history.extend(
                     [
-                        EpochResult(epoch, "train", train_metrics["loss"], train_metrics["balanced_accuracy"], train_metrics["f1"], current_lr, train_metrics["duration_seconds"]),
-                        EpochResult(epoch, "val", val_metrics["loss"], val_metrics["balanced_accuracy"], val_metrics["f1"], current_lr, val_metrics["duration_seconds"]),
+                        EpochResult(
+                            epoch,
+                            stage.name,
+                            stage_epoch,
+                            "train",
+                            train_metrics["loss"],
+                            train_metrics["balanced_accuracy"],
+                            train_metrics["f1"],
+                            current_lr,
+                            train_metrics["duration_seconds"],
+                        ),
+                        EpochResult(
+                            epoch,
+                            stage.name,
+                            stage_epoch,
+                            "val",
+                            val_metrics["loss"],
+                            val_metrics["balanced_accuracy"],
+                            val_metrics["f1"],
+                            current_lr,
+                            val_metrics["duration_seconds"],
+                        ),
                     ]
                 )
                 if tracker is not None:
@@ -463,6 +515,8 @@ def train_phase4(
                             metadata={
                                 "fusion_contract": str(phase4_cfg["fusion_contract"]),
                                 "fusion_dim": int(phase4_cfg["fusion_dim"]),
+                                "stage": stage.name,
+                                "stage_epoch": stage_epoch,
                                 "branch_dims": _as_str_key_mapping(phase4_cfg["branch_dims"], context="phase4.branch_dims"),
                                 "upstream": {
                                     "phase2_gate_met": str(upstream_phase2.get("status", "")).lower() == "met",
@@ -474,8 +528,8 @@ def train_phase4(
                         ),
                     )
 
-                overfit_decision = overfit_monitor.update(epoch=epoch, train_loss=train_metrics["loss"], val_loss=val_metrics["loss"])
-                val_metric_decision = val_metric_monitor.update(epoch=epoch, metric_value=val_metrics["balanced_accuracy"])
+                overfit_decision = overfit_monitor.update(epoch=stage_epoch, train_loss=train_metrics["loss"], val_loss=val_metrics["loss"])
+                val_metric_decision = val_metric_monitor.update(epoch=stage_epoch, metric_value=val_metrics["balanced_accuracy"])
                 if overfit_decision.should_stop:
                     stop_reason = overfit_decision.reason
                 elif val_metric_decision.should_stop:
@@ -484,6 +538,7 @@ def train_phase4(
                 print(
                     (
                         f"\n{_format_epoch_prefix(epoch, int(phase4_cfg['epochs']), show_epoch=False)}   "
+                        f"stage {stage.name} {stage_epoch:>2d}/{stage.planned_epochs:<2d}   "
                         f"train_loss {_format_metric_value(train_metrics['loss'], precision=6):>8}   "
                         f"val_loss {_format_metric_value(val_metrics['loss'], precision=6):>8}   "
                         f"bal_acc {_format_metric_value(val_metrics['balanced_accuracy'], precision=4):>6}   "
@@ -495,8 +550,44 @@ def train_phase4(
                     flush=True,
                 )
                 if stop_reason is not None:
-                    print(stop_reason, flush=True)
-                    break
+                    stage_events.append(
+                        {
+                            "stage": stage.name,
+                            "start_epoch": epoch - stage_epoch + 1,
+                            "end_epoch": epoch,
+                            "planned_epochs": stage.planned_epochs,
+                            "completed": False,
+                            "reason": stop_reason,
+                        }
+                    )
+                    if stage_index == len(stage_sequence) - 1:
+                        print(stop_reason, flush=True)
+                        break
+                    print(f"{stop_reason} Advancing to next Phase 4 stage.", flush=True)
+                    stage_index += 1
+                    stage_epoch = 1
+                    overfit_monitor = OverfitStopMonitor(_resolve_early_stopping(phase4_cfg))
+                    val_metric_monitor = ValMetricEarlyStop(_resolve_val_metric_early_stopping(phase4_cfg))
+                    stop_reason = None
+                    continue
+
+                if stage_epoch >= stage.planned_epochs:
+                    stage_events.append(
+                        {
+                            "stage": stage.name,
+                            "start_epoch": epoch - stage_epoch + 1,
+                            "end_epoch": epoch,
+                            "planned_epochs": stage.planned_epochs,
+                            "completed": True,
+                            "reason": None,
+                        }
+                    )
+                    stage_index += 1
+                    stage_epoch = 1
+                    overfit_monitor = OverfitStopMonitor(_resolve_early_stopping(phase4_cfg))
+                    val_metric_monitor = ValMetricEarlyStop(_resolve_val_metric_early_stopping(phase4_cfg))
+                else:
+                    stage_epoch += 1
     finally:
         if tracker is not None:
             tracker.flush()
@@ -517,6 +608,8 @@ def train_phase4(
         "best_epoch": best_epoch,
         "stopped_early": stop_reason is not None,
         "stop_reason": stop_reason,
+        "stage_events": stage_events,
+        "stage_early_exits": [event for event in stage_events if not bool(event["completed"])],
         "fusion_contract": str(phase4_cfg["fusion_contract"]),
         "fusion_dim": int(phase4_cfg["fusion_dim"]),
         "best_validation_metrics": {

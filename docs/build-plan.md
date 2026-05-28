@@ -196,7 +196,8 @@ Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel, but the remainin
   - Stage 1: fusion head only, LR = **5e-5**
   - Stage 2: Branch B expander + Branch C, LR = **2e-5**
   - Stage 3: Branch A last two blocks, LR = **5e-6**
-  - Scheduler: CosineAnnealingLR; 20 epochs, batch size 64; asymmetric combined loss
+  - Scheduler: CosineAnnealingLR; 30 epochs, batch size 64; asymmetric combined loss
+  - Early stopping is stage-aware: Stage 1/2 plateau advances to the next stage, while Stage 3 plateau can end the full run
 - [ ] Run Phase 4 training and save `checkpoints/phase4_ensemble.pt`
 - [ ] Run all 7 ensemble combination experiments in a separate evaluation branch/scope (see table below)
 - [x] Prepare inference handoff artifact for Week 4 eval — `runs/<run>/inference_contract.json`
@@ -287,7 +288,7 @@ This reference table describes the proposal target. The current repository only 
 | Optimizer | Adam (β₁=0.5, β₂=0.999) | same |
 | Learning rate | 2e-4 | staged: **5e-5 → 2e-5 → 5e-6** |
 | Batch size | 64 | 64 |
-| Epochs | 20 | 20 |
+| Epochs | 20 | 30 total: 10 fusion-only, 10 B+C, 10 Branch A tail |
 | Scheduler | CosineAnnealingLR | same |
 | Loss | BCE | AsymmetricCombinedLoss: 0.7 × fake-positive BCE + 0.3 × hinge, real_weight=1.5 |
 | Dropout (fusion) | 0.3 | 0.3 |

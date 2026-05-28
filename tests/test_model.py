@@ -23,6 +23,7 @@ from models.branch_b import SUMMARY_FEATURE_NAMES, _scalar_stats
 from models.discriminator import FUSION_DIM_2108
 from evaluation.inference_handoff import write_inference_contract
 from training.losses import AsymmetricCombinedLoss, CombinedBCEHingeLoss, HingeLoss
+from training.phase4_trainer import _phase4_stage_sequence
 
 
 # GOLDEN_BRANCH_B_SUMMARY is a snapshot of the committed 8-D summary at seed 0 — not a
@@ -536,6 +537,28 @@ class DiscriminatorPhase4TestCase(unittest.TestCase):
         for index, block in enumerate(model.branch_a.features):
             for parameter in block.parameters():
                 self.assertEqual(parameter.requires_grad, index >= 3)
+
+    def test_phase4_stage_sequence_uses_thirty_epoch_plan(self) -> None:
+        stages = _phase4_stage_sequence(
+            {
+                "epochs": 30,
+                "learning_rate": 0.00005,
+                "staged_unfreezing": {
+                    "enabled": True,
+                    "fusion_epochs": 10,
+                    "branches_bc_epochs": 10,
+                    "branch_a_train_last_n": 2,
+                    "fusion_lr": 0.00005,
+                    "branches_bc_lr": 0.00002,
+                    "branch_a_lr": 0.000005,
+                },
+            },
+            total_branch_a_blocks=5,
+        )
+
+        self.assertEqual([stage.name for stage in stages], ["fusion_only", "branches_bc", "branch_a_tail"])
+        self.assertEqual([stage.planned_epochs for stage in stages], [10, 10, 10])
+        self.assertEqual([stage.branch_a_train_last_n for stage in stages], [0, 0, 2])
 
     def test_phase4_forward_with_branch_features_shapes(self) -> None:
         model = DiscriminatorPhase4()

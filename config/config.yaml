@@ -102,7 +102,7 @@ phase3:
     val_loss_ceiling: 0.45
 
 phase4:
-  epochs: 20
+  epochs: 30
   device: mps
   learning_rate: 0.00005
   optimizer: adam
@@ -110,7 +110,7 @@ phase4:
     - 0.5
     - 0.999
   scheduler: CosineAnnealingLR
-  scheduler_t_max: 20
+  scheduler_t_max: 30
   dropout: 0.3
   seed: 42
   checkpoint_name: phase4_ensemble.pt
@@ -129,8 +129,8 @@ phase4:
     margin: 0.8
   staged_unfreezing:
     enabled: true
-    fusion_epochs: 7
-    branches_bc_epochs: 7
+    fusion_epochs: 10
+    branches_bc_epochs: 10
     branch_a_train_last_n: 2
     fusion_lr: 0.00005
     branches_bc_lr: 0.00002

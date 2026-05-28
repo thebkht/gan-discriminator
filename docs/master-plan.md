@@ -180,7 +180,7 @@ Current status from the repository state:
 - **Current training runs now use guarded stopping.** Branch A and Phase 2 trainers stop early when validation loss shows sustained overfitting, and each phase also has a branch-specific validation-loss ceiling after warmup.
 - **Phase 2 is gate-cleared.** `checkpoints/phase2_a_b.pt` now exists with `phase == 2`; the saved checkpoint reports best validation metrics of **1.0000 balanced accuracy** and **1.0000 F1** at epoch **2**, and `runs/phase2_a_b/benchmark_summary.json` matches those values.
 - **Week 2 Dev 2 training is now complete.** `checkpoints/phase3_a_b_c.pt` exists and matches `runs/phase3_a_b_c_w2/benchmark_summary.json`. The best validation result occurs at epoch **8** with **0.8741 balanced accuracy**, **0.9067 F1**, **0.9484 AUC-ROC**, and **0.2726 loss**, which clears the configured Phase 3 gate.
-- **Week 3 is now partially implemented.** Phase 4 training is wired on the locked `2108-D` contract with staged unfreezing: fusion-only, then Branch B+C, then the Branch A tail. Ensemble experiments and OOD evaluation remain outstanding. The architectural decision is resolved for the current pipeline: preserve the learned `32-D` Branch B expansion through Phase 4.
+- **Week 3 is now partially implemented.** Phase 4 training is wired on the locked `2108-D` contract with stage-aware early stopping across a 30-epoch plan: 10 fusion-only epochs, 10 Branch B+C epochs, then 10 Branch A-tail epochs. Ensemble experiments and OOD evaluation remain outstanding. The architectural decision is resolved for the current pipeline: preserve the learned `32-D` Branch B expansion through Phase 4.
 
 ### Milestones
 
@@ -264,7 +264,7 @@ Two developers, four weeks, split by model vs. data/eval ownership.
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 1    | Project scaffold, `config.yaml`, requirements, experiment tracking setup; `BranchA_CNN` + `DiscriminatorPhase1`; core training loop (`trainer.py`), BCE loss; unit tests; train Branch A; save `phase1_branch_a_best.pt` |
 | 2    | `BranchB_Spatiotemporal` + `DiscriminatorPhase2` (Branch A frozen); Phase 2 training script; full-gate Branch B training complete; `phase2_a_b.pt` ready for Dev 2 consumption                                           |
-| 3    | Staged ensemble fine-tune with asymmetric BCE+hinge loss tuning; save `phase4_ensemble.pt`                                                                                                                                |
+| 3    | 30-epoch staged ensemble fine-tune with asymmetric BCE+hinge loss tuning; save `phase4_ensemble.pt`                                                                                                                        |
 | 4    | All 7 ensemble combination experiments; architecture review; support OOD eval                                                                                                                                            |
 
 **Dev 2 — Data, physics & evaluation**
@@ -424,7 +424,7 @@ Training all branches simultaneously from scratch leads to unstable gradients an
 | Optimizer              | Adam (β₁=0.5, β₂=0.999) |
 | LR (phases 1–3)        | 2e-4                    |
 | LR (phase 4 fine-tune) | 5e-5                    |
-| Epochs per phase       | 20                      |
+| Epochs                 | 20 for phases 1-3; 30 for Phase 4 staged fine-tuning |
 | Scheduler              | CosineAnnealingLR       |
 | Dropout (fusion head)  | 0.3                     |
 | Fake ratio             | 0.5 (balanced)          |

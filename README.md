@@ -192,14 +192,15 @@ Phase 3 defaults:
 
 Phase 4 defaults:
 
-- Epochs: `20`
+- Epochs: `30`
 - Base learning rate: `5e-5`
 - Scheduler: `CosineAnnealingLR`
 - Pretrained Phase 3 checkpoint: `phase3_a_b_c.pt`
 - Default Phase 4 checkpoint name: `phase4_ensemble.pt`
 - Pairing mode: `adjacent_cache`
 - Loss: `AsymmetricCombinedLoss` with `bce_weight=0.7`, `hinge_weight=0.3`, `real_weight=1.5`, `fake_weight=1.0`, and margin `0.8`
-- Staged unfreezing: 7 epochs fusion-only at `5e-5`, 7 epochs Branch B expander + Branch C at `2e-5`, then Branch A last two blocks at `5e-6`
+- Staged unfreezing: 10 epochs fusion-only at `5e-5`, 10 epochs Branch B expander + Branch C at `2e-5`, then 10 epochs with the last two Branch A blocks at `5e-6`
+- Early stopping is stage-aware: a plateau in Stage 1 or Stage 2 advances to the next stage instead of ending the full Phase 4 run
 
 By default, outputs are written to:
 
