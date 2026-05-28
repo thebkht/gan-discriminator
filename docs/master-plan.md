@@ -47,7 +47,7 @@ A **hybrid three-branch discriminator** that captures orthogonal signals:
 The proposal is the target design, not the current implementation state.
 
 - Implemented now: Branch A baseline, Branch B temporal summary branch, Branch C physics branch, Phase 2 and Phase 3 training paths, CelebA pair loader, offline flow precompute, checkpoint helpers, and evaluation metrics/plots
-- Implemented now: Phase 4 fine-tuning path, Phase 4 checkpoint metadata, combined BCE+Hinge loss, and inference handoff artifact wiring
+- Implemented now: Phase 4 fine-tuning path, Phase 4 checkpoint metadata, staged unfreezing, fake-positive asymmetric BCE+hinge loss, and inference handoff artifact wiring
 - Not implemented now: random-forest ensemble experiments and OOD evaluation
 - Important delta: the active runtime contract remains `2048 + 32 + 28 = 2108`; proposal-parity `2084-D` fusion is not the current load-compatible path
 
@@ -180,7 +180,7 @@ Current status from the repository state:
 - **Current training runs now use guarded stopping.** Branch A and Phase 2 trainers stop early when validation loss shows sustained overfitting, and each phase also has a branch-specific validation-loss ceiling after warmup.
 - **Phase 2 is gate-cleared.** `checkpoints/phase2_a_b.pt` now exists with `phase == 2`; the saved checkpoint reports best validation metrics of **1.0000 balanced accuracy** and **1.0000 F1** at epoch **2**, and `runs/phase2_a_b/benchmark_summary.json` matches those values.
 - **Week 2 Dev 2 training is now complete.** `checkpoints/phase3_a_b_c.pt` exists and matches `runs/phase3_a_b_c_w2/benchmark_summary.json`. The best validation result occurs at epoch **8** with **0.8741 balanced accuracy**, **0.9067 F1**, **0.9484 AUC-ROC**, and **0.2726 loss**, which clears the configured Phase 3 gate.
-- **Week 3 is now partially implemented.** Phase 4 training is wired on the locked `2108-D` contract. Ensemble experiments and OOD evaluation remain outstanding. The architectural decision is resolved for the current pipeline: preserve the learned `32-D` Branch B expansion through Phase 4.
+- **Week 3 is now partially implemented.** Phase 4 training is wired on the locked `2108-D` contract with staged unfreezing: fusion-only, then Branch B+C, then the Branch A tail. Ensemble experiments and OOD evaluation remain outstanding. The architectural decision is resolved for the current pipeline: preserve the learned `32-D` Branch B expansion through Phase 4.
 
 ### Milestones
 
@@ -264,7 +264,7 @@ Two developers, four weeks, split by model vs. data/eval ownership.
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 1    | Project scaffold, `config.yaml`, requirements, experiment tracking setup; `BranchA_CNN` + `DiscriminatorPhase1`; core training loop (`trainer.py`), BCE loss; unit tests; train Branch A; save `phase1_branch_a_best.pt` |
 | 2    | `BranchB_Spatiotemporal` + `DiscriminatorPhase2` (Branch A frozen); Phase 2 training script; full-gate Branch B training complete; `phase2_a_b.pt` ready for Dev 2 consumption                                           |
-| 3    | Full ensemble fine-tune, unfreeze all branches, BCE + Hinge combined loss tuning; save `phase4_ensemble.pt`                                                                                                              |
+| 3    | Staged ensemble fine-tune with asymmetric BCE+hinge loss tuning; save `phase4_ensemble.pt`                                                                                                                                |
 | 4    | All 7 ensemble combination experiments; architecture review; support OOD eval                                                                                                                                            |
 
 **Dev 2 — Data, physics & evaluation**
@@ -326,11 +326,11 @@ deepfake_detector/
 │
 ├── training/
 │   ├── trainer.py                   # Main training loop
-│   ├── losses.py                    # BCE + Hinge loss implementations
+│   ├── losses.py                    # BCE, hinge, and asymmetric Phase 4 loss implementations
 │   ├── phase1_train.py              # Branch A only
 │   ├── phase2_train.py              # A + B (frozen A)
 │   ├── phase3_train.py              # A + B + C (frozen A, B)
-│   └── phase4_finetune.py           # Full ensemble fine-tune
+│   └── phase4_finetune.py           # Staged Phase 4 fine-tune
 │
 ├── evaluation/
 │   ├── eval.py                      # Balanced accuracy, F1, confusion matrix
@@ -456,13 +456,15 @@ Simple, interpretable. Used for all phased training.
 L_hinge = E[max(0, 1 − D(x))] + E[max(0, 1 + D(G(z)))]
 ```
 
-Enforces a margin between real and fake predictions. Used during Phase 4 fine-tuning.
+Enforces a margin between real and fake predictions under the proposal's discriminator notation.
 
 ### Combined (Phase 4)
 
 ```
-L_total = α · L_BCE + (1 − α) · L_hinge      α = 0.7
+L_total = α · L_BCE_weighted + (1 − α) · L_hinge_asymmetric      α = 0.7
 ```
+
+The implemented Phase 4 loss uses the repository's fake-positive logit convention (`label 1 = fake`) and upweights real-class mistakes with `real_weight=1.5`. Its hinge term pushes real logits below `-margin` and fake logits above `margin`; the current default margin is `0.8`.
 
 ---
 

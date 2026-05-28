@@ -19,7 +19,7 @@ The codebase is not at full proposal parity yet. Today it includes the completed
 - Implemented: metric computation, checkpointing, confusion-matrix plotting, run summaries, and optional TensorBoard logging
 - Verified: Branch B regression tests, Branch C golden-feature tests, Branch A/B freeze tests, data pipeline tests, overfit-stop unit tests, and Branch A evaluation smoke tests
 - Verified: `checkpoints/phase3_a_b_c.pt` and `runs/phase3_a_b_c_w2/` clear the configured Phase 3 gate at epoch `8` with balanced accuracy `0.8741`, F1 `0.9067`, AUC-ROC `0.9484`, and validation loss `0.2726`
-- Implemented: Phase 4 fine-tuning path, full-unfreeze `DiscriminatorPhase4`, combined BCE+Hinge loss, and `inference_contract.json` handoff artifact generation
+- Implemented: Phase 4 fine-tuning path, staged-unfreeze `DiscriminatorPhase4`, fake-positive asymmetric BCE+hinge loss, and `inference_contract.json` handoff artifact generation
 - Not implemented yet: RF branch-combination experiments and OOD evaluation
 - Active runtime contract: `2048 + 32 + 28 = 2108`; the proposal-parity `2048 + 8 + 28 = 2084` fusion contract is not the current load-compatible path
 - Historical checkpoint: `checkpoints/phase2_a_b.pt` was trained on the legacy pre-Run 3 Branch B architecture and should not be treated as the current baseline
@@ -46,7 +46,8 @@ deepfake_detector/
 │   ├── branch_c.py
 │   └── discriminator.py
 ├── scripts/
-│   └── download_celeba.sh
+│   ├── download_celeba.sh
+│   └── eval_pred_all_branches.py
 ├── tests/
 │   ├── test_bootstrap_and_imports.py
 │   ├── test_branch_a_baseline.py
@@ -64,8 +65,10 @@ deepfake_detector/
 │   ├── phase2_trainer.py
 │   ├── phase3_train.py
 │   ├── phase3_trainer.py
+│   ├── phase4_finetune.py
+│   ├── phase4_trainer.py
 │   ├── run_artifacts.py
-│   └── tracker.py
+│   ├── tracker.py
 │   └── trainer.py
 ├── pyrightconfig.json
 ├── requirements.txt
@@ -115,6 +118,13 @@ Branch C and Phase 3 in [models/branch_c.py](models/branch_c.py), [models/discri
 - The repository also ships `training/checkpointing.py` and `training/losses.py`, including resume support and a standalone `HingeLoss` module for later phases
 
 This means the current code now reaches the proposal's three-branch structure and includes the Phase 4 fine-tuning path, but not the full evaluation parity. The active Phase 3 and Phase 4 path uses the current `32-D` Branch B expansion, so the runtime contract remains `2048 + 32 + 28 = 2108` and the later ensemble workflow is still pending.
+
+Phase 4 in [models/discriminator.py](models/discriminator.py), [training/phase4_trainer.py](training/phase4_trainer.py), and [training/losses.py](training/losses.py):
+
+- `DiscriminatorPhase4` loads the Phase 3 `2108-D` contract but starts in a fusion-only trainable state
+- Training uses staged unfreezing: fusion head first, Branch B expander + Branch C next, then the last two Branch A blocks at a lower LR
+- The Phase 4 loss is `AsymmetricCombinedLoss`, which keeps the repository's fake-positive logit convention and upweights real-class mistakes with `real_weight`
+- The old standalone `CombinedBCEHingeLoss` remains available for tests and comparison, but it is not the active Phase 4 trainer loss
 
 ## Dataset Pipeline
 
@@ -179,6 +189,17 @@ Phase 3 defaults:
 - Pairing mode: `adjacent_cache`
 - Targets: balanced accuracy `>= 0.83`, F1 `>= 0.80`
 - Early-stop defaults currently include overfit patience `5` and validation-loss ceiling `0.45`
+
+Phase 4 defaults:
+
+- Epochs: `20`
+- Base learning rate: `5e-5`
+- Scheduler: `CosineAnnealingLR`
+- Pretrained Phase 3 checkpoint: `phase3_a_b_c.pt`
+- Default Phase 4 checkpoint name: `phase4_ensemble.pt`
+- Pairing mode: `adjacent_cache`
+- Loss: `AsymmetricCombinedLoss` with `bce_weight=0.7`, `hinge_weight=0.3`, `real_weight=1.5`, `fake_weight=1.0`, and margin `0.8`
+- Staged unfreezing: 7 epochs fusion-only at `5e-5`, 7 epochs Branch B expander + Branch C at `2e-5`, then Branch A last two blocks at `5e-6`
 
 By default, outputs are written to:
 
@@ -389,7 +410,7 @@ The repository also includes a standalone Branch A test evaluator in [training/e
 - `runs/<run-name>/confusion_matrix.png`
 - `runs/<run-name>/eval_report.md`
 
-Run it with:
+Run the Branch A evaluator with:
 
 ```bash
 python3 -m training.eval_branch_a --config config/config.yaml --run-name branch_a_test_eval
@@ -402,6 +423,14 @@ python3 -m training.eval_branch_a \
   --config config/config.yaml \
   --checkpoint checkpoints/phase1_branch_a_best.pt \
   --run-name branch_a_test_eval
+```
+
+The branch comparison script in [scripts/eval_pred_all_branches.py](scripts/eval_pred_all_branches.py) exports prediction CSVs and confusion matrices for available Branch A, Phase 2, Phase 3, and Phase 4 checkpoints. For Phase 3 and Phase 4 it keeps `pairing_mode="adjacent_cache"` so cached flow tensors still match their adjacent partners, then balances the exported evaluation rows by class. The summary records both the balanced eval count and the original source class counts.
+
+Run the branch comparison evaluator with:
+
+```bash
+python3 scripts/eval_pred_all_branches.py --config config/config.yaml --run-dir runs/eval_pred_all_branches --device cpu
 ```
 
 The Week 1 trainer uses baseline targets:
@@ -450,6 +479,7 @@ Coverage currently includes:
 - Current fake samples are cross-identity proxy negatives, not actual deepfakes.
 - Out-of-domain evaluation is not implemented.
 - Branch-combination ensemble experiments are not implemented in this branch.
+- Phase 3/4 flow-aware evaluation must keep `adjacent_cache`; switching those phases to default pairing would attach cached flow tensors to the wrong frame pair unless the cache is regenerated.
 - The proposal's direct `2048 + 8 + 28 = 2084` fusion contract is still not the active runtime contract; the current Phase 3 and Phase 4 stack uses `2048 + 32 + 28 = 2108`.
 - If `identity_CelebA.txt` is missing, real pairs fall back to adjacent-image pairing.
 - If `identity_CelebA.txt` is missing, fake pairs fall back to deterministic distant-index pairing.
@@ -461,7 +491,7 @@ Coverage currently includes:
 
 The planned next steps are:
 
-1. Add Phase 4 fine-tuning to reach the proposal's later-stage training recipe.
+1. Run the staged Phase 4 fine-tuning job and save `checkpoints/phase4_ensemble.pt`.
 2. Decide whether Branch B should stay at the current learned `32-D` expansion or be reduced back to the proposal's direct `8-D` fusion contract.
 3. Replace cross-identity proxy negatives with stronger fake-generation sources.
 4. Add out-of-domain evaluation and branch-combination experiments, especially the proposal's recommended B+C ensemble.

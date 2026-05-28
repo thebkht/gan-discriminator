@@ -1,6 +1,6 @@
 # Hybrid Three-Branch GAN Discriminator — Build Plan
 
-> Last updated: 2026-05-26
+> Last updated: 2026-05-28
 > Status: **Week 1 and Week 2 are gate-cleared.** The repository now includes a trained `phase3_a_b_c.pt` checkpoint plus matching run artifacts. **Week 3 remains split**: the Phase 4 fine-tuning path is implemented on the active `2108-D` contract, while branch-combination ensemble experiments and OOD evaluation are still open.
 
 > **2 Engineers · 4 Weeks · OOD Robustness Target: 94.4% balanced accuracy**
@@ -23,7 +23,7 @@
 | Phase | Where the repo is now | Next gate |
 | ----- | --------------------- | --------- |
 | 1 | CelebA at `data/celeba/img_align_celeba` (202,599 images); Branch A encoder and baseline classifier implemented; flow cache complete at `data/flow_cache` (202,599 `*_flow.pt` files, ~7.0 GB, shape `(2, 64, 64)` float32); `test_flow_precompute_smoke` passing; loader supports same-identity real pairs, cross-identity proxy fakes, singleton-adjacent fallback, and attribute-derived pseudo-identities when true identity labels are unavailable | Keep the saved Branch A baseline and reports aligned with the stronger proxy-task configuration |
-| 2 | Branch B (`models/branch_b.py`) and the full Phase 2 A+B stack are implemented; Run 3 now shares Branch A's encoder, uses the committed 8-D summary `[vel_mean, vel_std, vel_max, vel_min, cos_sim, l2_dist, sign_consistency, abs_vel_mean]`, expands it to 32-D before fusion, and partially unfreezes the shared encoder tail. Branch C (`models/branch_c.py`), `DiscriminatorPhase3`, hinge loss, flow-aware `adjacent_cache` loading, checkpoint resume helpers, and Phase 3 CLI/trainer wiring are implemented and trained. `checkpoints/phase3_a_b_c.pt` matches `runs/phase3_a_b_c_w2/benchmark_summary.json`, with the best validation result at epoch `8`: balanced accuracy `0.8741`, F1 `0.9067`, AUC-ROC `0.9484`, loss `0.2726`. | Start Week 3 ensemble work from the trained Phase 3 baseline |
+| 2 | Branch B (`models/branch_b.py`) and the full Phase 2 A+B stack are implemented; Run 3 now shares Branch A's encoder, uses the committed 8-D summary `[vel_mean, vel_std, vel_max, vel_min, cos_sim, l2_dist, sign_consistency, abs_vel_mean]`, expands it to 32-D before fusion, and partially unfreezes the shared encoder tail. Branch C (`models/branch_c.py`), `DiscriminatorPhase3`, hinge loss, flow-aware `adjacent_cache` loading, checkpoint resume helpers, and Phase 3 CLI/trainer wiring are implemented and trained. `checkpoints/phase3_a_b_c.pt` matches `runs/phase3_a_b_c_w2/benchmark_summary.json`, with the best validation result at epoch `8`: balanced accuracy `0.8741`, F1 `0.9067`, AUC-ROC `0.9484`, loss `0.2726`. Phase 3/4 comparison eval keeps adjacent-cache flow valid and balances evaluation rows by class. | Run staged Phase 4 from the trained Phase 3 baseline |
 
 Update this table when a gate flips so the plan stays honest for the next work session.
 
@@ -40,6 +40,7 @@ Update this table when a gate flips so the plan stays honest for the next work s
 - **Freeze discipline:** Branch A conv weights must be verifiably frozen before Phase 2 training begins. Add a unit test that confirms no weight change after an optimizer step. Same rule applies to Branch A + B before Phase 3.
 - **Proposal parity discipline:** when docs say "proposal", keep the exact tensor contracts from the project proposal. When code deviates temporarily, call it out explicitly instead of silently rewriting the proposal in documentation.
 - **Cache contract:** cached flow filenames are `{frame_a_stem}_flow.pt`, computed against the adjacent-index partner rule used by `data/precompute_flow.py`. The loader's real/fake pair sampling can now diverge from that rule. Before Branch C training, either keep Branch C explicitly on adjacent-index pairing or regenerate the cache for the chosen pairing strategy. Do not silently mix cached flow built for one pairing rule with frame pairs sampled by another.
+- **Flow-aware eval contract:** Phase 3/4 evaluation must not switch to default pairing while reusing the adjacent flow cache. Keep `adjacent_cache` and balance the evaluated rows if a 50/50 metric view is needed.
 - **Commit discipline:** land implementation in small commits by subsystem. Default split: shared data contract change, then model implementation, then training script, then tests. Each commit should answer: what boundary advanced, what verification was run.
 - **Docs move with the stage:** if a stage changes a runtime contract (e.g. `__getitem__` return signature), update this file's Progress snapshot and any affected docstrings in the same commit.
 
@@ -185,15 +186,17 @@ Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel, but the remainin
 
 ### Dev 1 — End-to-End Fine-tune
 
-**Goal:** All branches unfrozen and fine-tuned together on the active `2108-D` fusion contract. `phase4_ensemble.pt` saved.
+**Goal:** Fine-tune the active `2108-D` fusion contract with staged unfreezing. `phase4_ensemble.pt` saved.
 
 - [x] Implement `DiscriminatorPhase4` (`models/discriminator.py`)
-  - Load `phase3_a_b_c.pt`; unfreeze all branches
+  - Load `phase3_a_b_c.pt`; start fusion-only, then stage into Branch B+C and Branch A tail unfreezing
   - Final fusion FC head stays on the active `2108 → 512 → 128 → 1` contract (`2048 + 32 + 28`)
-- [x] Implement combined loss (`training/losses.py`): `L_total = 0.7 × L_BCE + 0.3 × L_hinge`
+- [x] Implement asymmetric combined loss (`training/losses.py`): fake-positive BCE+hinge with real-class upweighting
 - [x] Write Phase 4 fine-tune script (`training/phase4_finetune.py`)
-  - All parameters trainable; Optimizer: Adam (β₁=0.5, β₂=0.999), LR = **5e-5**
-  - Scheduler: CosineAnnealingLR; 20 epochs, batch size 64; combined loss
+  - Stage 1: fusion head only, LR = **5e-5**
+  - Stage 2: Branch B expander + Branch C, LR = **2e-5**
+  - Stage 3: Branch A last two blocks, LR = **5e-6**
+  - Scheduler: CosineAnnealingLR; 20 epochs, batch size 64; asymmetric combined loss
 - [ ] Run Phase 4 training and save `checkpoints/phase4_ensemble.pt`
 - [ ] Run all 7 ensemble combination experiments in a separate evaluation branch/scope (see table below)
 - [x] Prepare inference handoff artifact for Week 4 eval — `runs/<run>/inference_contract.json`
@@ -282,11 +285,11 @@ This reference table describes the proposal target. The current repository only 
 | Parameter | Phases 1–3 | Phase 4 |
 | --------- | ---------- | ------- |
 | Optimizer | Adam (β₁=0.5, β₂=0.999) | same |
-| Learning rate | 2e-4 | **5e-5** |
+| Learning rate | 2e-4 | staged: **5e-5 → 2e-5 → 5e-6** |
 | Batch size | 64 | 64 |
 | Epochs | 20 | 20 |
 | Scheduler | CosineAnnealingLR | same |
-| Loss | BCE | 0.7 × BCE + 0.3 × Hinge |
+| Loss | BCE | AsymmetricCombinedLoss: 0.7 × fake-positive BCE + 0.3 × hinge, real_weight=1.5 |
 | Dropout (fusion) | 0.3 | 0.3 |
 
 ---
@@ -298,7 +301,7 @@ This reference table describes the proposal target. The current repository only 
 | `phase1_branch_a_best.pt` | 1 | Branch A conv + FC | Gate cleared: acc ≥ 77%, F1 ≥ 0.70 |
 | `phase2_a_b.pt` | 2 | Current Phase 2 baseline in this workspace; verify provenance before reuse because older legacy Phase 2 runs also exist locally | Gate cleared in prior run: acc ≥ 88%, F1 ≥ 0.88 |
 | `phase3_a_b_c.pt` | 3 | A + B (frozen) + Branch C + FC | Gate cleared at epoch 8: balanced acc `0.8741`, F1 `0.9067`, AUC-ROC `0.9484`, loss `0.2726` |
-| `phase4_ensemble.pt` | 4 | All branches unfrozen, fine-tuned | Not created yet; target B+C ≥ 94.4%, F1 ≥ 0.93 |
+| `phase4_ensemble.pt` | 4 | Staged fine-tune: fusion-only → B+C → Branch A tail | Not created yet; target B+C ≥ 94.4%, F1 ≥ 0.93 |
 
 ---
 
