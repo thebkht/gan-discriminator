@@ -3,7 +3,7 @@
 > Deepfake Face Detection · Based on Barrington & Farid, CVPR Workshop 2026  
 > Dataset: CelebA (202,599 images) via Kaggle `jessicali9530/celeba-dataset`
 >
-> Doc basis: refreshed on 2026-05-26 from the project proposal and current repository state
+> Doc basis: refreshed on 2026-05-29 from the project proposal and current repository state
 
 ---
 
@@ -49,7 +49,9 @@ The proposal is the target design, not the current implementation state.
 - Implemented now: Branch A baseline, Branch B temporal summary branch, Branch C physics branch, Phase 2 and Phase 3 training paths, CelebA pair loader, offline flow precompute, checkpoint helpers, and evaluation metrics/plots
 - Implemented now: Phase 4 fine-tuning path, Phase 4 checkpoint metadata, staged unfreezing, fake-positive asymmetric BCE+hinge loss, and inference handoff artifact wiring
 - Current checkpoint choice: Phase 3 is the best deployment-style candidate under the balanced objective; the final Phase 4 run improved balanced accuracy/AUC only slightly but lowered F1 and real-class TNR
-- Not implemented now: random-forest ensemble experiments and OOD evaluation
+- Implemented and run on the proxy test split: random-forest ensemble tooling, single-branch probe/ablation reporting, and Phase 3 threshold-sweep tooling
+- Current ensemble result: B+C RF did not clear the proposal gate, reaching balanced accuracy `0.8869`, F1 `0.8837`, and AUC-ROC `0.9440`; A+B+C RF was strongest on the proxy task at balanced accuracy `0.8992`, F1 `0.8962`, and AUC-ROC `0.9471`
+- Not implemented now: OOD evaluation
 - Important delta: the active runtime contract remains `2048 + 32 + 28 = 2108`; proposal-parity `2084-D` fusion is not the current load-compatible path
 
 ---
@@ -181,7 +183,8 @@ Current status from the repository state:
 - **Current training runs now use guarded stopping.** Branch A and Phase 2 trainers stop early when validation loss shows sustained overfitting, and each phase also has a branch-specific validation-loss ceiling after warmup.
 - **Phase 2 is gate-cleared.** `checkpoints/phase2_a_b.pt` now exists with `phase == 2`; the saved checkpoint reports best validation metrics of **1.0000 balanced accuracy** and **1.0000 F1** at epoch **2**, and `runs/phase2_a_b/benchmark_summary.json` matches those values.
 - **Week 2 Dev 2 training is now complete.** `checkpoints/phase3_a_b_c.pt` exists and matches `runs/phase3_a_b_c_w2/benchmark_summary.json`. The best validation result occurs at epoch **8** with **0.8741 balanced accuracy**, **0.9067 F1**, **0.9484 AUC-ROC**, and **0.2726 loss**, which clears the configured Phase 3 gate.
-- **Week 3 Phase 4 has been executed.** Phase 4 uses the locked `2108-D` contract with stage-aware early stopping across a 30-epoch plan: 10 fusion-only epochs, 10 Branch B+C epochs, then 10 Branch A-tail epochs. Final comparison: Phase 3 `0.8790` balanced accuracy / `0.9072` F1 / `0.9480` AUC-ROC / `0.78` TNR / `0.94` TPR; Phase 4 `0.8850` balanced accuracy / `0.8955` F1 / `0.9499` AUC-ROC / `0.72` TNR / `0.97` TPR. The asymmetric fine-tune increased fake recall but worsened real specificity, so RF ensemble experiments, Phase 3 threshold sweep, and OOD evaluation are now the priority.
+- **Week 3 Phase 4 has been executed.** Phase 4 uses the locked `2108-D` contract with stage-aware early stopping across a 30-epoch plan: 10 fusion-only epochs, 10 Branch B+C epochs, then 10 Branch A-tail epochs. Final comparison: Phase 3 `0.8790` balanced accuracy / `0.9072` F1 / `0.9480` AUC-ROC / `0.78` TNR / `0.94` TPR; Phase 4 `0.8850` balanced accuracy / `0.8955` F1 / `0.9499` AUC-ROC / `0.72` TNR / `0.97` TPR. The asymmetric fine-tune increased fake recall but worsened real specificity, so Phase 3 remains the preferred neural checkpoint.
+- **Week 3 ensemble run is complete on the proxy test split.** `runs/ensemble_ablation/summary.md` reports `13,074` balanced test examples, with B+C RF at **0.8869 balanced accuracy / 0.8837 F1 / 0.9440 AUC-ROC**, below the proposal gate. A+B+C RF is the strongest proxy-task probe at **0.8992 balanced accuracy / 0.8962 F1 / 0.9471 AUC-ROC**. The neural Phase 3 threshold sweep selects threshold `0.61` for **0.8850 balanced accuracy**, F1 `0.8808`, TPR `0.8501`, and TNR `0.9198`.
 
 ### Milestones
 
@@ -194,10 +197,10 @@ gantt
     Data + Flow + Eval module (Dev 2) :done, 2026-05-15, 7d
   section Week 2
     Branch B (Dev 1)              :done, 2026-05-22, 7d
-    Flow cache + Branch C (Dev 2) :active, 2026-05-22, 7d
+    Flow cache + Branch C (Dev 2) :done, 2026-05-22, 7d
   section Week 3
-    Ensemble fine-tune (Dev 1)    :2026-05-29, 7d
-    RF ensemble + ablation (Dev 2):2026-05-29, 7d
+    Ensemble fine-tune (Dev 1)    :done, 2026-05-29, 3d
+    RF ensemble + ablation (Dev 2):done, 2026-05-29, 4d
   section Week 4
     Ensemble experiments (Dev 1)  :2026-06-05, 7d
     OOD + profiling + report (Dev 2) :2026-06-05, 7d
@@ -230,17 +233,17 @@ gantt
 
 - [x] Dev 1: Unfreeze all branches, fine-tune end-to-end with lower LR (5e-5)
 - [x] Dev 1: Characterize Phase 4 result; Phase 3 remains the current deployment candidate because Phase 4 lowered F1 and TNR
-- [ ] Dev 1: Train independent random forest classifiers per branch pair (B+C recommended)
-- [ ] Dev 1: Run all 7 ensemble combination experiments
-- [ ] Target: **B+C ensemble ≥ 94.4% balanced accuracy, F1 ≥ 0.93**
+- [x] Dev 1/Dev 2: Implement independent logistic/RF classifiers for the canonical branch combinations (B+C recommended)
+- [x] Dev 1/Dev 2: Run all 7 ensemble combination experiments and write the resulting summary
+- [ ] Target: **B+C ensemble ≥ 94.4% balanced accuracy, F1 ≥ 0.93** — not cleared on the proxy test split
 - [x] Save `checkpoints/phase4_ensemble.pt` from an executed Phase 4 run
-- [ ] Dev 2: Finalize confusion matrix + per-branch ablation module in parallel
+- [x] Dev 2: Implement confusion-matrix output and per-branch probe/ablation reporting
 
 ### Week 4 — Eval & Hardening
 
 - [ ] Evaluate on out-of-distribution test sets (style transfer, diffusion-generated faces)
-- [ ] Run threshold sweep on Phase 3 checkpoint to select the best TNR/TPR operating point
-- [ ] Run full ablation: each branch independently, all pairs, full triple
+- [x] Run threshold sweep on Phase 3 checkpoint to select the best proxy-task TNR/TPR operating point
+- [x] Run proxy-task ablation/probe pass: each branch independently, all pairs, full triple
 - [ ] Profile inference time; optimize Branch C flow pre-computation
 - [ ] Write final eval report
 
@@ -337,15 +340,18 @@ deepfake_detector/
 │
 ├── evaluation/
 │   ├── eval.py                      # Balanced accuracy, F1, confusion matrix
+│   ├── ensemble.py                  # 7-combo logistic/RF ensemble probes
 │   ├── inference_handoff.py         # Phase 4 -> Week 4 inference contract artifact
-│   └── ood_eval.py                  # Out-of-domain evaluation
+│   └── threshold_sweep.py           # Phase 3 threshold operating-point sweep
 │
 ├── checkpoints/                     # Saved model weights (gitignored)
 │
 ├── runs/                            # TensorBoard logs (gitignored)
 │
 ├── scripts/
-│   └── download_celeba.sh           # Kaggle API download helper
+│   ├── download_celeba.sh           # Kaggle API download helper
+│   ├── eval_pred_all_branches.py    # Prediction CSV/confusion export for checkpoints
+│   └── run_ensemble_ablation.py     # 7-combo ensemble + threshold sweep runner
 │
 ├── tests/
 │   ├── test_model.py                # Shape/forward-pass unit tests
@@ -493,6 +499,14 @@ For the B+C ensemble (recommended per proposal):
 3. Fit a **Random Forest classifier** on [B_logit, C_logit] → real/fake
 4. Optionally stack with Branch A logit for the full A+B+C ensemble
 
+The current repository implements this evaluation layer as feature probes over the active Phase 3/4 branch outputs:
+
+- `evaluation/ensemble.py` extracts A `2048-D`, B `32-D`, C `28-D`, and full-model logit features.
+- Single-branch A/B/C configs use logistic regression.
+- A+B, A+C, B+C, and A+B+C configs use `RandomForestClassifier(n_estimators=100, random_state=42)`.
+- `scripts/run_ensemble_ablation.py` balances extracted examples by class, uses an 80/20 probe split, writes normalized and raw confusion matrices for all seven configs, and runs the Phase 3 threshold sweep in the same output directory.
+- The completed proxy-task run in `runs/ensemble_ablation/` did not clear the B+C proposal gate; OOD evaluation is still required before making any deployment claim.
+
 ### Out-of-Domain Test Sets
 
 To validate OOD robustness, evaluate on:
@@ -515,9 +529,9 @@ To validate OOD robustness, evaluate on:
 | **B + C ensemble**               | **94.4%**   | **94.4%**   | **0.93** | ⭐ Recommended       |
 | A + B + C full ensemble          | 89.5%       | 89.5%       | 0.86     | Note: lower than B+C |
 
-> **Insight from the proposal:** the full A+B+C ensemble underperforms B+C because Branch A introduces in-distribution bias that dilutes the OOD robustness of the physics+temporal signal. B+C is therefore the deployment-recommended configuration in the proposal, pending reproduction in this repository.
+> **Insight from the proposal:** the full A+B+C ensemble underperforms B+C because Branch A introduces in-distribution bias that dilutes the OOD robustness of the physics+temporal signal. The current proxy-task run did not reproduce that pattern: A+B+C RF outperformed B+C RF on balanced accuracy, while B+C remained below the proposal gate. OOD evaluation is still required before making a deployment recommendation.
 
-> **Current repo result:** the neural Phase 4 A+B+C fine-tune did not improve the balanced deployment objective enough to replace Phase 3. Phase 3 should be the baseline checkpoint for threshold sweeps while the RF B+C ensemble is evaluated.
+> **Current repo result:** the neural Phase 4 A+B+C fine-tune did not improve the balanced deployment objective enough to replace Phase 3, and the proxy-task B+C RF ensemble did not clear the proposal gate. Phase 3 remains the baseline neural checkpoint; OOD evaluation is the next meaningful test.
 
 ---
 

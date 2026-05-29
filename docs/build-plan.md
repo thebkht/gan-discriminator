@@ -1,7 +1,7 @@
 # Hybrid Three-Branch GAN Discriminator — Build Plan
 
-> Last updated: 2026-05-28
-> Status: **Week 1 and Week 2 are gate-cleared.** The repository now includes a trained `phase3_a_b_c.pt` checkpoint plus matching run artifacts. **Week 3 Phase 4 has been executed and is not the deployment candidate**: it marginally improves balanced accuracy/AUC but worsens F1 and real-class TNR. RF ensemble experiments, threshold sweep, and OOD evaluation are now the priority.
+> Last updated: 2026-05-29
+> Status: **Week 1 and Week 2 are gate-cleared.** The repository now includes a trained `phase3_a_b_c.pt` checkpoint plus matching run artifacts. **Week 3 Phase 4 has been executed and is not the deployment candidate**: it marginally improves balanced accuracy/AUC but worsens F1 and real-class TNR. The Week 3 RF ensemble, neural ablation, and threshold-sweep job has now run on the balanced proxy test subset. B+C RF did not clear the proposal gate, so OOD evaluation and stronger fake data remain the priority.
 
 > **2 Engineers · 4 Weeks · OOD Robustness Target: 94.4% balanced accuracy**
 
@@ -13,7 +13,7 @@
 | ----- | ---- | --------------------------- | --------------------------------------------------------------- |
 | 1     | 1    | Setup + Branch A            | Branch A val acc ≥ 77%, F1 ≥ 0.70; flow cache complete         |
 | 2     | 2    | Branches B & C (parallel)   | `phase2_a_b.pt` and `phase3_a_b_c.pt` both saved               |
-| 3     | 3    | Phase 4 fine-tune + separate ensemble follow-up | Phase 4 characterized; B+C ensemble remains open               |
+| 3     | 3    | Phase 4 fine-tune + separate ensemble follow-up | Phase 4 characterized; ensemble run complete; B+C gate not cleared |
 | 4     | 4    | Eval & hardening            | OOD eval complete; final report written                         |
 
 ---
@@ -23,7 +23,7 @@
 | Phase | Where the repo is now | Next gate |
 | ----- | --------------------- | --------- |
 | 1 | CelebA at `data/celeba/img_align_celeba` (202,599 images); Branch A encoder and baseline classifier implemented; flow cache complete at `data/flow_cache` (202,599 `*_flow.pt` files, ~7.0 GB, shape `(2, 64, 64)` float32); `test_flow_precompute_smoke` passing; loader supports same-identity real pairs, cross-identity proxy fakes, singleton-adjacent fallback, and attribute-derived pseudo-identities when true identity labels are unavailable | Keep the saved Branch A baseline and reports aligned with the stronger proxy-task configuration |
-| 2 | Branch B (`models/branch_b.py`) and the full Phase 2 A+B stack are implemented; Run 3 now shares Branch A's encoder, uses the committed 8-D summary `[vel_mean, vel_std, vel_max, vel_min, cos_sim, l2_dist, sign_consistency, abs_vel_mean]`, expands it to 32-D before fusion, and partially unfreezes the shared encoder tail. Branch C (`models/branch_c.py`), `DiscriminatorPhase3`, hinge loss, flow-aware `adjacent_cache` loading, checkpoint resume helpers, and Phase 3 CLI/trainer wiring are implemented and trained. `checkpoints/phase3_a_b_c.pt` matches `runs/phase3_a_b_c_w2/benchmark_summary.json`, with the best validation result at epoch `8`: balanced accuracy `0.8741`, F1 `0.9067`, AUC-ROC `0.9484`, loss `0.2726`. Phase 3/4 comparison eval keeps adjacent-cache flow valid and balances evaluation rows by class. Final Phase 4 results are balanced accuracy `0.8850`, F1 `0.8955`, AUC-ROC `0.9499`, TNR `0.72`, and TPR `0.97`, so Phase 3 remains the better deployment candidate under the balanced objective. | Run RF ensemble and Phase 3 threshold sweep |
+| 2 | Branch B (`models/branch_b.py`) and the full Phase 2 A+B stack are implemented; Run 3 now shares Branch A's encoder, uses the committed 8-D summary `[vel_mean, vel_std, vel_max, vel_min, cos_sim, l2_dist, sign_consistency, abs_vel_mean]`, expands it to 32-D before fusion, and partially unfreezes the shared encoder tail. Branch C (`models/branch_c.py`), `DiscriminatorPhase3`, hinge loss, flow-aware `adjacent_cache` loading, checkpoint resume helpers, and Phase 3 CLI/trainer wiring are implemented and trained. `checkpoints/phase3_a_b_c.pt` matches `runs/phase3_a_b_c_w2/benchmark_summary.json`, with the best validation result at epoch `8`: balanced accuracy `0.8741`, F1 `0.9067`, AUC-ROC `0.9484`, loss `0.2726`. Phase 3/4 comparison eval keeps adjacent-cache flow valid and balances evaluation rows by class. Final Phase 4 results are balanced accuracy `0.8850`, F1 `0.8955`, AUC-ROC `0.9499`, TNR `0.72`, and TPR `0.97`, so Phase 3 remains the better deployment candidate under the balanced objective. The Week 3 ensemble run in `runs/ensemble_ablation/` evaluated `13,074` balanced test examples: B+C RF reached balanced accuracy `0.8869`, F1 `0.8837`, AUC-ROC `0.9440`; A+B+C RF was strongest at balanced accuracy `0.8992`, F1 `0.8962`, AUC-ROC `0.9471`; threshold `0.61` gave the best Phase 3 balanced accuracy `0.8850`. | Move to OOD evaluation and stronger fake data |
 
 Update this table when a gate flips so the plan stays honest for the next work session.
 
@@ -201,7 +201,10 @@ Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel, but the remainin
 - [x] Run Phase 4 training and save `checkpoints/phase4_ensemble.pt`
   - Final comparison: Phase 3 `0.8790` balanced accuracy / `0.9072` F1 / `0.9480` AUC-ROC / `0.78` TNR / `0.94` TPR; Phase 4 `0.8850` balanced accuracy / `0.8955` F1 / `0.9499` AUC-ROC / `0.72` TNR / `0.97` TPR
   - Interpretation: asymmetric loss pushed the model further toward fake predictions on the imbalanced `adjacent_cache` eval distribution, so Phase 4 is not the current deployment candidate
-- [ ] Run all 7 ensemble combination experiments in a separate evaluation branch/scope (see table below)
+- [x] Implement all 7 ensemble combination experiments in a separate evaluation scope (see table below)
+- [x] Run the full 7-combo ensemble job and record the result artifacts in `runs/ensemble_ablation/`
+  - Result: B+C RF balanced accuracy `0.8869`, F1 `0.8837`, AUC-ROC `0.9440`; gate not cleared
+  - Strongest proxy-task probe: A+B+C RF balanced accuracy `0.8992`, F1 `0.8962`, AUC-ROC `0.9471`
 - [x] Prepare inference handoff artifact for Week 4 eval — `runs/<run>/inference_contract.json`
 
 **Ensemble experiment matrix:**
@@ -224,16 +227,19 @@ Dev 1 owns Branch B. Dev 2 owns Branch C. Both run in parallel, but the remainin
 
 **Goal:** RF classifiers trained for all 7 configs. Per-branch ablation and confusion matrix output complete.
 
-- [ ] Implement `evaluation/ensemble.py` in the ensemble-eval branch/scope
-  - `extract_branch_outputs(model, dataloader, branch) -> np.ndarray` — shape depends on chosen contract
+- [x] Implement `evaluation/ensemble.py` in the ensemble-eval branch/scope
+  - `extract_branch_outputs(model, dataloader, device) -> (features, labels)` — feature shapes follow the active `2048 + 32 + 28` contract
   - `train_rf_ensemble(features, labels) -> RandomForestClassifier` — `n_estimators=100, random_state=42`
   - `evaluate_ensemble(clf, features, labels) -> dict` — balanced acc, F1, AUC-ROC
-- [ ] Run RF ensemble for all 7 branch combinations on held-out test split
-- [ ] Run threshold sweep on the Phase 3 checkpoint to select a better TNR/TPR operating point
-- [ ] Per-branch ablation: forward each branch independently, zero others, compute balanced acc / F1 / AUC-ROC
-- [ ] Save confusion matrices for all 7 configs to `runs/ensemble_ablation/`
+- [x] Implement `evaluation/threshold_sweep.py` for Phase 3 operating-point sweeps
+- [x] Implement `scripts/run_ensemble_ablation.py` to extract features, run all 7 configs, write confusion matrices, run the threshold sweep, and save `summary.json` / `summary.md`
+- [x] Run RF ensemble for all 7 branch combinations on held-out test split
+- [x] Run threshold sweep on the Phase 3 checkpoint to select a better TNR/TPR operating point and document the chosen threshold
+  - Best balanced-accuracy threshold: `0.61`, balanced accuracy `0.8850`, F1 `0.8808`, TPR `0.8501`, TNR `0.9198`
+- [x] Per-branch probe infrastructure: single-branch logistic probes plus neural full-model logit view
+- [x] Save confusion matrices for all 7 configs to `runs/ensemble_ablation/`
 
-**Done when:** All 7 experiment results are logged; B+C RF ensemble clears the gate; ablation table is written to `runs/ensemble_ablation/`.
+**Actual result:** All 7 experiment results are logged and the ablation table is written to `runs/ensemble_ablation/`, but B+C RF did not clear the gate. Treat the proposal gate as unresolved until OOD data is evaluated.
 
 ---
 

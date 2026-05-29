@@ -378,6 +378,21 @@ class DiscriminatorPhase3TestCase(unittest.TestCase):
         self.assertEqual(tuple(logits.shape), (4,))
         self.assertFalse(torch.isnan(logits).any())
 
+    def test_phase3_forward_with_branch_features_shapes(self) -> None:
+        model = DiscriminatorPhase3()
+        frame_a = torch.randn(4, 3, 64, 64)
+        frame_b = torch.randn(4, 3, 64, 64)
+        flow = torch.randn(4, 2, 64, 64)
+
+        output = model.forward_with_branch_features(frame_a, frame_b, flow)
+
+        self.assertEqual(set(output), {"a", "b", "c", "logit"})
+        self.assertEqual(tuple(output["a"].shape), (4, 2048))
+        self.assertEqual(tuple(output["b"].shape), (4, 32))
+        self.assertEqual(tuple(output["c"].shape), (4, 28))
+        self.assertEqual(tuple(output["logit"].shape), (4,))
+        self.assertFalse(torch.isnan(output["logit"]).any())
+
     def test_load_phase2_into_phase3_skips_fusion_keys(self) -> None:
         phase2_model, checkpoint_path = self._phase2_checkpoint()
         phase3_model = DiscriminatorPhase3()

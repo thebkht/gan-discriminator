@@ -244,6 +244,12 @@ def main() -> None:
     real_idx = np.flatnonzero(test_labels == 0)
     fake_idx = np.flatnonzero(test_labels == 1)
     n_bal    = min(len(real_idx), len(fake_idx))
+    if n_bal == 0:
+        raise ValueError(
+            "Ensemble ablation requires at least one real and one fake example after "
+            f"feature extraction, got real={len(real_idx)} and fake={len(fake_idx)}. "
+            "Increase --limit or use a split with both classes."
+        )
     bal_idx  = np.sort(np.concatenate([real_idx[:n_bal], fake_idx[:n_bal]]))
 
     bal_features = {k: v[bal_idx] for k, v in test_features.items()}

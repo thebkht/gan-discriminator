@@ -175,6 +175,17 @@ class DiscriminatorPhase3(nn.Module):
         logits = self.fusion(fused)
         return logits.squeeze(1)
 
+    def forward_with_branch_features(self, frame_a: Tensor, frame_b: Tensor, flow: Tensor) -> dict[str, Tensor]:
+        with torch.no_grad():
+            feat_a = self.branch_a(frame_a).detach()
+            feat_b = self.branch_b(frame_a, frame_b).detach()
+        feat_c = self.branch_c(frame_a, frame_b, flow)
+        fused = torch.cat([feat_a, feat_b, feat_c], dim=1)
+        if fused.shape[-1] != self.fusion_dim:
+            raise ValueError(f"Expected fusion dim {self.fusion_dim}, got {fused.shape[-1]}")
+        logits = self.fusion(fused).squeeze(1)
+        return {"a": feat_a, "b": feat_b, "c": feat_c, "logit": logits}
+
 
 class DiscriminatorPhase4(nn.Module):
     """Phase 4 discriminator that mirrors Phase 3 and fine-tunes all branches."""

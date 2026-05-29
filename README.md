@@ -21,7 +21,10 @@ The codebase is not at full proposal parity yet. Today it includes the completed
 - Verified: `checkpoints/phase3_a_b_c.pt` and `runs/phase3_a_b_c_w2/` clear the configured Phase 3 gate at epoch `8` with balanced accuracy `0.8741`, F1 `0.9067`, AUC-ROC `0.9484`, and validation loss `0.2726`
 - Implemented: Phase 4 fine-tuning path, staged-unfreeze `DiscriminatorPhase4`, fake-positive asymmetric BCE+hinge loss, and `inference_contract.json` handoff artifact generation
 - Verified: the final Phase 4 run improved balanced accuracy only marginally (`0.8790 -> 0.8850`) and AUC-ROC (`0.9480 -> 0.9499`), but reduced F1 (`0.9072 -> 0.8955`) and real-class TNR (`0.78 -> 0.72`); Phase 3 is the current best deployment candidate under the balanced objective
-- Not implemented yet: RF branch-combination experiments and OOD evaluation
+- Verified: RF branch-combination ensemble, neural-logit ablation, and Phase 3 threshold sweep ran under `runs/ensemble_ablation/` on the balanced test subset of `13,074` examples
+- Verified: B+C RF did not clear the proposal gate, with balanced accuracy `0.8869`, F1 `0.8837`, and AUC-ROC `0.9440`; A+B+C RF was the strongest probe in this run at balanced accuracy `0.8992`, F1 `0.8962`, and AUC-ROC `0.9471`
+- Verified: Phase 3 threshold sweep selected threshold `0.61` for best balanced accuracy `0.8850`, with F1 `0.8808`, TPR `0.8501`, and TNR `0.9198`
+- Not implemented yet: OOD evaluation
 - Active runtime contract: `2048 + 32 + 28 = 2108`; the proposal-parity `2048 + 8 + 28 = 2084` fusion contract is not the current load-compatible path
 - Historical checkpoint: `checkpoints/phase2_a_b.pt` was trained on the legacy pre-Run 3 Branch B architecture and should not be treated as the current baseline
 
@@ -40,7 +43,10 @@ deepfake_detector/
 │   └── master-plan.md
 ├── evaluation/
 │   ├── branch_a_eval.py
-│   └── eval.py
+│   ├── ensemble.py
+│   ├── eval.py
+│   ├── inference_handoff.py
+│   └── threshold_sweep.py
 ├── models/
 │   ├── branch_a.py
 │   ├── branch_b.py
@@ -48,7 +54,8 @@ deepfake_detector/
 │   └── discriminator.py
 ├── scripts/
 │   ├── download_celeba.sh
-│   └── eval_pred_all_branches.py
+│   ├── eval_pred_all_branches.py
+│   └── run_ensemble_ablation.py
 ├── tests/
 │   ├── test_bootstrap_and_imports.py
 │   ├── test_branch_a_baseline.py
@@ -118,7 +125,7 @@ Branch C and Phase 3 in [models/branch_c.py](models/branch_c.py), [models/discri
 - Phase 3 enforces the current cache contract by requiring `include_flow=True` and `pairing_mode="adjacent_cache"` dataloaders, then verifying the cached flow directory before training starts
 - The repository also ships `training/checkpointing.py` and `training/losses.py`, including resume support and a standalone `HingeLoss` module for later phases
 
-This means the current code now reaches the proposal's three-branch structure and includes the Phase 4 fine-tuning path, but not the full evaluation parity. The active Phase 3 and Phase 4 path uses the current `32-D` Branch B expansion, so the runtime contract remains `2048 + 32 + 28 = 2108` and the later ensemble workflow is still pending.
+This means the current code now reaches the proposal's three-branch structure and includes the Phase 4 fine-tuning path, but not the full evaluation parity. The active Phase 3 and Phase 4 path uses the current `32-D` Branch B expansion, so the runtime contract remains `2048 + 32 + 28 = 2108`. The RF ensemble and threshold-sweep artifacts are present under `runs/ensemble_ablation/`; OOD evaluation is still pending.
 
 Phase 4 in [models/discriminator.py](models/discriminator.py), [training/phase4_trainer.py](training/phase4_trainer.py), and [training/losses.py](training/losses.py):
 
@@ -436,6 +443,56 @@ Run the branch comparison evaluator with:
 python3 scripts/eval_pred_all_branches.py --config config/config.yaml --run-dir runs/eval_pred_all_branches --device cpu
 ```
 
+## RF Ensemble, Ablation, And Threshold Sweep
+
+The RF ensemble helpers in [evaluation/ensemble.py](evaluation/ensemble.py) extract frozen Branch A/B/C features from a Phase 3 or Phase 4 model using the active `2048 + 32 + 28` contract. The canonical seven branch combinations are:
+
+- A, B, and C single-branch logistic probes
+- A+B, A+C, B+C, and A+B+C random-forest probes
+
+Run the combined Week 3 evaluator with:
+
+```bash
+python3 scripts/run_ensemble_ablation.py \
+  --config config/config.yaml \
+  --checkpoint checkpoints/phase3_a_b_c.pt \
+  --run-dir runs/ensemble_ablation \
+  --device cpu
+```
+
+Useful smoke-run options:
+
+- `--limit`: cap evaluated examples
+- `--split train|val|test`: choose the source split; default is `test`
+- `--sweep-steps`: choose the number of threshold points; default is `99`
+- `--num-workers`: override dataloader workers
+
+This writes `summary.json`, `summary.md`, threshold-sweep artifacts, neural full-model confusion matrices, and normalized/non-normalized confusion matrices for all seven branch combinations under the chosen run directory. The script balances the extracted examples by class, then uses an 80/20 split for the RF/logistic probe.
+
+Current full-run result from `runs/ensemble_ablation/summary.md`:
+
+| Config | Classifier | Bal Acc | F1 | AUC-ROC |
+| ------ | ---------- | ------- | -- | ------- |
+| A only | Logistic | 0.6529 | 0.6224 | 0.6860 |
+| B only | Logistic | 0.8930 | 0.8897 | 0.9471 |
+| C only | Logistic | 0.5530 | 0.5516 | 0.5717 |
+| A+B | RF | 0.8939 | 0.8913 | 0.9463 |
+| A+C | RF | 0.6636 | 0.6338 | 0.6966 |
+| B+C | RF | 0.8869 | 0.8837 | 0.9440 |
+| A+B+C | RF | 0.8992 | 0.8962 | 0.9471 |
+
+The B+C RF probe did not clear the proposal target of balanced accuracy `>= 0.944` and F1 `>= 0.93` on this proxy-task run. The strongest probe was A+B+C RF, while the best neural Phase 3 threshold was `0.61`, giving balanced accuracy `0.8850`, F1 `0.8808`, TPR `0.8501`, and TNR `0.9198`.
+
+To run only the Phase 3 threshold sweep:
+
+```bash
+python3 -m evaluation.threshold_sweep \
+  --config config/config.yaml \
+  --checkpoint checkpoints/phase3_a_b_c.pt \
+  --run-dir runs/threshold_sweep_phase3 \
+  --device cpu
+```
+
 The Week 1 trainer uses baseline targets:
 
 - Balanced accuracy: `>= 0.77`
@@ -482,7 +539,7 @@ Coverage currently includes:
 - Phase 4 fine-tuning is implemented and has been run, but its asymmetric loss worsened the TNR/TPR balance and should not replace the Phase 3 checkpoint for deployment-style evaluation.
 - Current fake samples are cross-identity proxy negatives, not actual deepfakes.
 - Out-of-domain evaluation is not implemented.
-- Branch-combination ensemble experiments are not implemented in this branch.
+- Branch-combination ensemble and threshold-sweep tooling has been run on the proxy test split; B+C did not clear the proposal gate, so these results should not be treated as the final deployment result.
 - Phase 3/4 flow-aware evaluation must keep `adjacent_cache`; switching those phases to default pairing would attach cached flow tensors to the wrong frame pair unless the cache is regenerated.
 - The proposal's direct `2048 + 8 + 28 = 2084` fusion contract is still not the active runtime contract; the current Phase 3 and Phase 4 stack uses `2048 + 32 + 28 = 2108`.
 - If `identity_CelebA.txt` is missing, real pairs fall back to adjacent-image pairing.
@@ -495,7 +552,7 @@ Coverage currently includes:
 
 The planned next steps are:
 
-1. Run the RF branch-combination ensemble experiments, with B+C as the priority configuration.
-2. Sweep decision thresholds on the Phase 3 checkpoint to recover the best TNR/TPR operating point.
-3. Add out-of-domain evaluation on real deepfake data; this is the only meaningful test of the proposal's `94.4%` claim.
-4. Replace cross-identity proxy negatives with stronger fake-generation sources.
+1. Add out-of-domain evaluation on real deepfake data; this is the only meaningful test of the proposal's `94.4%` claim.
+2. Re-run the B+C ensemble on real OOD data rather than the cross-identity proxy task.
+3. Replace cross-identity proxy negatives with stronger fake-generation sources.
+4. Decide whether A+B+C RF should remain only a proxy-task result or become an additional comparison baseline.
