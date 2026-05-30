@@ -4,6 +4,8 @@
 
 The full forensics OOD evaluation is complete across all four local datasets, totaling `20,905` images. The result is a clear negative finding: the CelebA-trained neural model and all seven transfer ensembles fail to generalize to the forensics distribution.
 
+**The proposal target of 94.4% balanced accuracy and F1 ≥ 0.93 on forensics OOD content is not achievable with inference-only fixes (MTCNN alignment, threshold calibration, degenerate pairing, TTA) applied to the CelebA-trained checkpoint. Closing the gap to 94.4% requires training or adaptation on forensics or equivalent manipulated-face data — which is explicitly out of scope for this recovery pass.**
+
 The primary Dev 2 handoff artifact is `runs/forensics_eval/summary.json`. Per-image scores and confusion-matrix images are under `runs/forensics_eval/per_dataset/`, with pooled confusion matrices under `runs/forensics_eval/pooled/`.
 
 ## Protocol
@@ -17,6 +19,21 @@ The primary Dev 2 handoff artifact is `runs/forensics_eval/summary.json`. Per-im
 | Phase 4 comparison checkpoint | `checkpoints/phase4_ensemble.pt` |
 | CelebA transfer cache | `runs/celeba_features/phase3_train_adjacent_cache.npz` |
 | Output directory | `runs/forensics_eval` |
+
+## Inference-Only Recovery Harness
+
+This repository now includes the reduced-scope recovery path without forensics training:
+
+| Fix | Artifact / option |
+| --- | --- |
+| MTCNN-aligned cache | `scripts/preprocess_forensics_faces.py --output-root data/forensics_aligned` |
+| Degenerate pairing | default `--pairing degenerate` in `scripts/run_forensics_eval.py` |
+| Forensics val thresholds | `python -m evaluation.forensics_threshold_sweep --split validation` |
+| Per-dataset thresholds | `runs/forensics_threshold/per_dataset_thresholds.json` with `--threshold-mode per_dataset` |
+| Branch B polarity flag | `--branch-b-invert-logits` |
+| Horizontal flip TTA | `--tta` |
+
+Final claims must be gated on the measured MTCNN detection rate in `data/forensics_aligned/alignment_report.json`. If any dataset is below 95% detection, report measured lift only and do not extrapolate the optimistic MTCNN trajectory.
 
 ## Neural Result
 

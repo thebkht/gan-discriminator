@@ -89,11 +89,20 @@ class ForensicsFramePairDataset(Dataset):
         *,
         image_size: int = 64,
         pairing_mode: ForensicsPairingMode = "adjacent_same_class",
+        aligned_root: Optional[str | Path] = None,
         transform: Optional[Callable] = None,
         limit: Optional[int] = None,
     ) -> None:
         self.dataset_root = resolve_forensics_root(dataset_root)
+        self.source_dataset_root = self.dataset_root
         self.split = normalize_split(split)
+        self.aligned_root = Path(aligned_root) if aligned_root is not None else None
+        if self.aligned_root is not None:
+            self.dataset_root = _resolve_aligned_dataset_root(
+                self.source_dataset_root,
+                self.aligned_root,
+                self.split,
+            )
         self.image_size = int(image_size)
         self.pairing_mode = pairing_mode
         if pairing_mode not in {"adjacent_same_class", "degenerate"}:
@@ -145,6 +154,8 @@ class ForensicsFramePairDataset(Dataset):
             "path_b": str(path_b),
             "metadata": {
                 "dataset_root": str(self.dataset_root),
+                "source_dataset_root": str(self.source_dataset_root),
+                "aligned_root": str(self.aligned_root) if self.aligned_root else None,
                 "split": self.split,
                 "class_name": class_name,
                 "pairing_mode": self.pairing_mode,
@@ -178,6 +189,7 @@ def create_forensics_dataloader(
     num_workers: int = 0,
     limit: Optional[int] = None,
     *,
+    aligned_root: Optional[str | Path] = None,
     image_size: int = 64,
     shuffle: bool = False,
 ) -> DataLoader:
@@ -186,6 +198,7 @@ def create_forensics_dataloader(
         split=split,
         image_size=image_size,
         pairing_mode=pairing_mode,
+        aligned_root=aligned_root,
         limit=limit,
     )
     return DataLoader(
@@ -207,6 +220,27 @@ def _image_paths(class_dir: Path) -> List[Path]:
     return sorted(
         path for path in class_dir.iterdir()
         if path.is_file() and path.suffix.lower() in VALID_EXTENSIONS
+    )
+
+
+def _resolve_aligned_dataset_root(source_dataset_root: Path, aligned_root: Path, split: str) -> Path:
+    """Resolve a cached aligned root for nested or flat Data Set N layouts."""
+    dataset_name = (
+        source_dataset_root.parent.name
+        if source_dataset_root.name == source_dataset_root.parent.name
+        else source_dataset_root.name
+    )
+    candidates = [
+        aligned_root / dataset_name,
+        aligned_root / dataset_name / dataset_name,
+    ]
+    if _looks_like_dataset_root(aligned_root) or (aligned_root / split).is_dir():
+        candidates.insert(0, aligned_root)
+    for candidate in candidates:
+        if _looks_like_dataset_root(candidate) or (candidate / split).is_dir():
+            return candidate
+    raise FileNotFoundError(
+        f"Aligned forensics cache for {dataset_name!r} not found under: {aligned_root}"
     )
 
 

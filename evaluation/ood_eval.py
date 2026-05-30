@@ -38,6 +38,7 @@ from evaluation.eval import (
     plot_confusion_matrix,
 )
 from evaluation.feature_cache import load_feature_cache
+from evaluation.tta import predict_probabilities_with_flip_tta, probabilities_to_logits
 from models.branch_a import BranchABaseline
 from models.discriminator import (
     DiscriminatorPhase3,
@@ -46,11 +47,13 @@ from models.discriminator import (
     load_phase3_into_phase4,
 )
 
-PhaseDiscriminator = DiscriminatorPhase3 | DiscriminatorPhase4
+PhaseDiscriminator = Any
 
 
 DEFAULT_THRESHOLD = 0.61
 DEFAULT_CELEBA_FEATURES = Path("runs/celeba_features/phase3_train_adjacent_cache.npz")
+DEFAULT_FORENSICS_THRESHOLD = Path("runs/forensics_threshold/threshold_sweep.json")
+DEFAULT_FORENSICS_PER_DATASET_THRESHOLDS = Path("runs/forensics_threshold/per_dataset_thresholds.json")
 
 
 def stable_sigmoid(logits: np.ndarray) -> np.ndarray:
@@ -66,15 +69,20 @@ def evaluate_ood_neural(
     logits: np.ndarray,
     labels: np.ndarray,
     *,
-    threshold: float,
+    threshold: float | np.ndarray,
 ) -> Dict[str, Any]:
     probabilities = stable_sigmoid(logits)
     default_predictions = (probabilities >= 0.5).astype(np.int64)
     tuned_predictions = (probabilities >= threshold).astype(np.int64)
+    threshold_value: float | str
+    if np.ndim(threshold) == 0:
+        threshold_value = float(threshold)
+    else:
+        threshold_value = "per_sample"
     return {
         "default_threshold": 0.5,
         "default_metrics": _metrics_from_predictions(labels, default_predictions, probabilities),
-        "threshold": float(threshold),
+        "threshold": threshold_value,
         "metrics": _metrics_from_predictions(labels, tuned_predictions, probabilities),
     }
 
@@ -125,9 +133,14 @@ def run_forensics_eval(
     forensics_root: Path,
     dataset: Optional[str] = None,
     split: str = "test",
-    pairing: ForensicsPairingMode = "adjacent_same_class",
+    pairing: ForensicsPairingMode = "degenerate",
     mode: str = "all",
     threshold: Optional[float] = None,
+    threshold_mode: str = "auto",
+    per_dataset_thresholds: Optional[Path] = None,
+    aligned_root: Optional[Path] = None,
+    branch_b_invert_logits: bool = False,
+    tta: bool = False,
     device: torch.device,
     celeba_features: Path = DEFAULT_CELEBA_FEATURES,
     phase4_checkpoint: Optional[Path] = None,
@@ -143,11 +156,27 @@ def run_forensics_eval(
     start = time.perf_counter()
     run_dir.mkdir(parents=True, exist_ok=True)
     split = normalize_split(split)
-    resolved_threshold = threshold if threshold is not None else _load_default_threshold()
+    threshold_artifact = _load_threshold_artifact(
+        threshold=threshold,
+        threshold_mode=threshold_mode,
+        per_dataset_path=per_dataset_thresholds,
+    )
+    resolved_threshold = float(threshold_artifact["pooled_threshold"])
+    resolved_per_dataset_thresholds = threshold_artifact["per_dataset_thresholds"]
     datasets = _select_datasets(forensics_root, dataset)
 
     print(f"[ood_eval] Datasets found: {len(datasets)}", flush=True)
-    print(f"[ood_eval] Split: {split} | Threshold: {resolved_threshold} | Mode: {mode}", flush=True)
+    print(
+        f"[ood_eval] Split: {split} | Pairing: {pairing} | Threshold: {resolved_threshold} "
+        f"({threshold_artifact['mode']}) | Mode: {mode}",
+        flush=True,
+    )
+    if aligned_root is not None:
+        print(f"[ood_eval] Aligned root: {aligned_root}", flush=True)
+    if branch_b_invert_logits:
+        print("[ood_eval] Branch B polarity mitigation enabled", flush=True)
+    if tta:
+        print("[ood_eval] Horizontal flip TTA enabled for neural logits", flush=True)
     print(f"[ood_eval] Device: {device} | Checkpoint: {checkpoint}", flush=True)
 
     model = _load_phase3_model(config, checkpoint, device)
@@ -169,7 +198,7 @@ def run_forensics_eval(
             print(f"[ood_eval] WARNING: CelebA feature cache missing at {celeba_features} — ensemble skipped", flush=True)
     
     dataset_records = []
-    pooled_parts: list[tuple[BranchFeatures, np.ndarray, np.ndarray, list[str]]] = []
+    pooled_parts: list[tuple[BranchFeatures, np.ndarray, np.ndarray, list[str], list[str]]] = []
 
     for dataset_index, dataset_root in enumerate(datasets, start=1):
         dataset_key = _dataset_key(dataset_root)
@@ -182,6 +211,7 @@ def run_forensics_eval(
             batch_size=batch_size,
             num_workers=num_workers,
             limit=limit,
+            aligned_root=aligned_root,
             shuffle=False,
         )
         features, labels, paths = _extract_features_with_paths(
@@ -190,13 +220,23 @@ def run_forensics_eval(
             device,
             desc=f"{dataset_root.parent.name} {split}",
             max_batches=max_batches,
+            pairing=pairing,
+            tta=tta,
         )
+        if branch_b_invert_logits:
+            features = _apply_branch_b_inversion(features)
         logits = features["logit"]
+        dataset_threshold = _threshold_for_dataset(dataset_key, resolved_threshold, resolved_per_dataset_thresholds)
         record: Dict[str, Any] = {
             "dataset": dataset_root.parent.name if dataset_root.name == dataset_root.parent.name else dataset_root.name,
             "dataset_root": str(dataset_root),
             "split": split,
             "pairing_mode": pairing,
+            "aligned_root": str(aligned_root) if aligned_root else None,
+            "threshold_mode": threshold_artifact["mode"],
+            "threshold": dataset_threshold,
+            "branch_b_invert_logits": branch_b_invert_logits,
+            "tta": tta,
             "checkpoint": str(checkpoint),
             "n_images": int(labels.shape[0]),
             "class_counts": _class_counts(labels),
@@ -205,10 +245,10 @@ def run_forensics_eval(
         print(f"[ood_eval]   Extracted {labels.shape[0]} samples (real={int((labels==0).sum())}, fake={int((labels==1).sum())})", flush=True)
 
         if mode in {"all", "neural"}:
-            neural = evaluate_ood_neural(logits, labels, threshold=resolved_threshold)
+            neural = evaluate_ood_neural(logits, labels, threshold=dataset_threshold)
             record["neural"] = neural
             neural_csv = dataset_dir / "phase3_per_image_scores.csv"
-            _write_neural_csv(neural_csv, paths, labels, logits, resolved_threshold)
+            _write_neural_csv(neural_csv, paths, labels, logits, dataset_threshold)
             record["per_image_scores_csv"] = str(neural_csv)
             bal_acc = neural["default_metrics"]["balanced_accuracy"]
             auc = neural["default_metrics"]["auc_roc"]
@@ -256,6 +296,7 @@ def run_forensics_eval(
                     batch_size=batch_size,
                     num_workers=num_workers,
                     limit=limit,
+                    aligned_root=aligned_root,
                     shuffle=False,
                 )
                 indomain_train_features, indomain_train_labels, _ = _extract_features_with_paths(
@@ -284,11 +325,12 @@ def run_forensics_eval(
             )
 
         dataset_records.append(record)
-        pooled_parts.append((features, labels, logits, paths))
+        pooled_parts.append((features, labels, logits, paths, [dataset_key] * int(labels.shape[0])))
 
     pooled_summary = _build_pooled_summary(
         pooled_parts,
         threshold=resolved_threshold,
+        per_dataset_thresholds=resolved_per_dataset_thresholds,
         transfer_features=transfer_features,
         transfer_labels=transfer_labels,
         run_dir=run_dir,
@@ -301,6 +343,12 @@ def run_forensics_eval(
         "pairing_mode": pairing,
         "device": str(device),
         "threshold": resolved_threshold,
+        "threshold_mode": threshold_artifact["mode"],
+        "threshold_source": threshold_artifact["source"],
+        "per_dataset_thresholds": resolved_per_dataset_thresholds,
+        "aligned_root": str(aligned_root) if aligned_root else None,
+        "branch_b_invert_logits": branch_b_invert_logits,
+        "tta": tta,
         "checkpoint": str(checkpoint),
         "phase4_checkpoint": str(phase4_checkpoint) if phase4_checkpoint else None,
         "celeba_feature_cache": str(celeba_features),
@@ -333,9 +381,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--split", default="test")
     parser.add_argument("--device", default="cpu", choices=("cpu", "cuda", "mps"))
     parser.add_argument("--run-dir", default="runs/forensics_eval")
-    parser.add_argument("--pairing", default="adjacent_same_class", choices=("adjacent_same_class", "degenerate"))
+    parser.add_argument("--pairing", default="degenerate", choices=("adjacent_same_class", "degenerate"))
     parser.add_argument("--mode", default="all", choices=("neural", "ensemble", "all"))
     parser.add_argument("--threshold", type=float, default=None)
+    parser.add_argument(
+        "--threshold-mode",
+        default="auto",
+        choices=("auto", "pooled", "per_dataset", "celeba_proxy", "manual"),
+        help="Threshold source for neural metrics",
+    )
+    parser.add_argument("--per-dataset-thresholds", default=None)
+    parser.add_argument("--aligned-root", default=None)
+    parser.add_argument("--branch-b-invert-logits", action="store_true")
+    parser.add_argument("--tta", action="store_true", help="Average original and horizontal-flip neural probabilities")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--max-batches", type=int, default=None)
     parser.add_argument("--celeba-features", default=str(DEFAULT_CELEBA_FEATURES))
@@ -361,6 +419,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         pairing=args.pairing,
         mode=args.mode,
         threshold=args.threshold,
+        threshold_mode=args.threshold_mode,
+        per_dataset_thresholds=Path(args.per_dataset_thresholds) if args.per_dataset_thresholds else None,
+        aligned_root=Path(args.aligned_root) if args.aligned_root else None,
+        branch_b_invert_logits=args.branch_b_invert_logits,
+        tta=args.tta,
         device=_resolve_device(args.device),
         celeba_features=Path(args.celeba_features),
         batch_size=args.batch_size,
@@ -439,6 +502,8 @@ def _extract_features_with_paths(
     *,
     desc: str,
     max_batches: Optional[int],
+    pairing: ForensicsPairingMode = "adjacent_same_class",
+    tta: bool = False,
 ) -> tuple[BranchFeatures, np.ndarray, list[str]]:
     model.eval().to(device)
     a_list: list[np.ndarray] = []
@@ -453,6 +518,15 @@ def _extract_features_with_paths(
             frame_b = batch["frame_b"].to(device)
             flow = batch["flow"].to(device)
             output = model.forward_with_branch_features(frame_a, frame_b, flow)
+            if tta:
+                probabilities = predict_probabilities_with_flip_tta(
+                    model,
+                    frame_a,
+                    frame_b,
+                    flow,
+                    degenerate_pairing=pairing == "degenerate",
+                )
+                output["logit"] = probabilities_to_logits(probabilities)
             a_list.append(output["a"].cpu().numpy())
             b_list.append(output["b"].cpu().numpy())
             c_list.append(output["c"].cpu().numpy())
@@ -531,9 +605,10 @@ def _same_domain_negative_pairs(
 
 
 def _build_pooled_summary(
-    pooled_parts: Iterable[tuple[BranchFeatures, np.ndarray, np.ndarray, list[str]]],
+    pooled_parts: Iterable[tuple[BranchFeatures, np.ndarray, np.ndarray, list[str], list[str]]],
     *,
     threshold: float,
+    per_dataset_thresholds: Mapping[str, float],
     transfer_features: Optional[BranchFeatures],
     transfer_labels: Optional[np.ndarray],
     run_dir: Path,
@@ -547,9 +622,20 @@ def _build_pooled_summary(
         for key in ("a", "b", "c", "logit")
     }
     labels = np.concatenate([item[1] for item in parts], axis=0)
+    dataset_keys = [key for item in parts for key in item[4]]
     pooled: Dict[str, Any] = {"n_images": int(labels.shape[0]), "class_counts": _class_counts(labels)}
     if mode in {"all", "neural"}:
         pooled["neural"] = evaluate_ood_neural(features["logit"], labels, threshold=threshold)
+        if per_dataset_thresholds:
+            thresholds = np.asarray(
+                [_threshold_for_dataset(key, threshold, per_dataset_thresholds) for key in dataset_keys],
+                dtype=np.float64,
+            )
+            pooled["neural_per_dataset_threshold"] = evaluate_ood_neural(
+                features["logit"],
+                labels,
+                threshold=thresholds,
+            )
     if mode in {"all", "ensemble"} and transfer_features is not None and transfer_labels is not None:
         ensemble = evaluate_ood_ensemble(
             transfer_features,
@@ -610,7 +696,9 @@ def _write_summary_markdown(path: Path, summary: Mapping[str, Any]) -> None:
     lines = [
         "# Week 4 Forensics OOD Evaluation",
         "",
-        f"Split: `{summary['split']}` | Pairing: `{summary['pairing_mode']}` | Threshold: `{summary['threshold']}`",
+        f"Split: `{summary['split']}` | Pairing: `{summary['pairing_mode']}` | "
+        f"Threshold: `{summary['threshold']}` | Mode: `{summary.get('threshold_mode', 'pooled')}` | "
+        f"TTA: `{summary.get('tta', False)}`",
         "",
         "## Neural Phase 3",
         "",
@@ -633,6 +721,15 @@ def _write_summary_markdown(path: Path, summary: Mapping[str, Any]) -> None:
         neural = pooled["neural"]
         lines.append(
             f"| pooled | {pooled.get('n_images')} "
+            f"| {_fmt(neural['default_metrics'].get('balanced_accuracy'))} "
+            f"| {_fmt(neural['metrics'].get('balanced_accuracy'))} "
+            f"| {_fmt(neural['metrics'].get('f1'))} "
+            f"| {_fmt(neural['metrics'].get('auc_roc'))} |"
+        )
+    if pooled.get("neural_per_dataset_threshold"):
+        neural = pooled["neural_per_dataset_threshold"]
+        lines.append(
+            f"| pooled per-dataset threshold | {pooled.get('n_images')} "
             f"| {_fmt(neural['default_metrics'].get('balanced_accuracy'))} "
             f"| {_fmt(neural['metrics'].get('balanced_accuracy'))} "
             f"| {_fmt(neural['metrics'].get('f1'))} "
@@ -707,16 +804,123 @@ def _dataset_key(dataset_root: Path) -> str:
     return name.lower().replace(" ", "_")
 
 
-def _load_default_threshold() -> float:
-    sweep_path = Path("runs/ensemble_ablation/threshold_sweep.json")
-    if not sweep_path.exists():
-        return DEFAULT_THRESHOLD
+def _apply_branch_b_inversion(features: BranchFeatures) -> BranchFeatures:
+    updated = dict(features)
+    updated["b"] = -features["b"]
+    updated["logit"] = -features["logit"]
+    return updated
+
+
+def _threshold_for_dataset(
+    dataset_key: str,
+    default_threshold: float,
+    per_dataset_thresholds: Mapping[str, float],
+) -> float:
+    aliases = {
+        dataset_key,
+        dataset_key.replace("_", " "),
+        dataset_key.title().replace("_", " "),
+    }
+    for alias in aliases:
+        if alias in per_dataset_thresholds:
+            return float(per_dataset_thresholds[alias])
+    return float(default_threshold)
+
+
+def _load_threshold_artifact(
+    *,
+    threshold: Optional[float],
+    threshold_mode: str,
+    per_dataset_path: Optional[Path],
+) -> Dict[str, Any]:
+    if threshold is not None:
+        return {
+            "mode": "manual",
+            "source": "cli",
+            "pooled_threshold": float(threshold),
+            "per_dataset_thresholds": {},
+        }
+    if threshold_mode == "celeba_proxy":
+        return {
+            "mode": "celeba_proxy",
+            "source": "constant",
+            "pooled_threshold": DEFAULT_THRESHOLD,
+            "per_dataset_thresholds": {},
+        }
+
+    pooled_threshold, pooled_source = _load_default_threshold_with_source()
+    per_dataset_thresholds = _load_per_dataset_thresholds(per_dataset_path or DEFAULT_FORENSICS_PER_DATASET_THRESHOLDS)
+    mode = threshold_mode
+    if mode == "auto":
+        mode = "per_dataset" if per_dataset_thresholds else "pooled"
+    if mode == "pooled":
+        per_dataset_thresholds = {}
+    return {
+        "mode": mode,
+        "source": pooled_source,
+        "pooled_threshold": pooled_threshold,
+        "per_dataset_thresholds": per_dataset_thresholds,
+    }
+
+
+def _load_per_dataset_thresholds(path: Path) -> Dict[str, float]:
+    if not path.exists():
+        return {}
     try:
-        records = json.loads(sweep_path.read_text(encoding="utf-8"))
-        best = max(records, key=lambda row: row["balanced_accuracy"])
-        return float(best["threshold"])
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    if isinstance(payload, dict) and "thresholds" in payload:
+        payload = payload["thresholds"]
+    if not isinstance(payload, dict):
+        return {}
+    thresholds: Dict[str, float] = {}
+    for key, value in payload.items():
+        if isinstance(value, dict):
+            value = value.get("threshold")
+        if value is None:
+            continue
+        try:
+            thresholds[str(key)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return thresholds
+
+
+def _load_default_threshold() -> float:
+    return _load_default_threshold_with_source()[0]
+
+
+def _load_default_threshold_with_source() -> tuple[float, str]:
+    if DEFAULT_FORENSICS_THRESHOLD.exists():
+        threshold = _read_best_threshold(DEFAULT_FORENSICS_THRESHOLD)
+        if threshold is not None:
+            return threshold, str(DEFAULT_FORENSICS_THRESHOLD)
+    sweep_path = Path("runs/ensemble_ablation/threshold_sweep.json")
+    threshold = _read_best_threshold(sweep_path)
+    if threshold is not None:
+        return threshold, str(sweep_path)
+    return DEFAULT_THRESHOLD, "celeba_proxy_default"
+
+
+def _read_best_threshold(path: Path) -> Optional[float]:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            if "best" in payload and isinstance(payload["best"], dict):
+                return float(payload["best"]["threshold"])
+            if "threshold" in payload:
+                return float(payload["threshold"])
+            if "records" in payload:
+                payload = payload["records"]
+        if isinstance(payload, list):
+            best = max(payload, key=lambda row: row["balanced_accuracy"])
+            return float(best["threshold"])
     except (OSError, ValueError, KeyError, TypeError):
-        return DEFAULT_THRESHOLD
+        return None
+    return None
 
 
 def _load_phase3_model(config: Mapping[str, Any], checkpoint: Path, device: torch.device) -> DiscriminatorPhase3:

@@ -38,7 +38,7 @@ def evaluate_forensics(
         forensics_root=forensics_root,
         dataset=dataset,
         split=split,
-        pairing="adjacent_same_class",
+        pairing="degenerate",
         mode="neural",
         device=torch_device,
     )

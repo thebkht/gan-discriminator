@@ -17,6 +17,7 @@ from data.celeba_loader import (
     create_celeba_dataloader,
     verify_flow_cache,
 )
+from data.face_align import align_face, align_face_or_fallback
 from data.forensics_loader import (
     ForensicsFramePairDataset,
     create_forensics_dataloader,
@@ -362,3 +363,44 @@ class ForensicsLoaderTestCase(unittest.TestCase):
 
         self.assertEqual(labels.count(0), 2)
         self.assertEqual(labels.count(1), 2)
+
+    def test_forensics_loader_reads_aligned_cache(self) -> None:
+        aligned_root = self.root / "forensics_aligned"
+        aligned_class_dir = aligned_root / "Data Set 1" / "test" / "real"
+        aligned_class_dir.mkdir(parents=True, exist_ok=True)
+        fake_dir = aligned_root / "Data Set 1" / "test" / "fake"
+        fake_dir.mkdir(parents=True, exist_ok=True)
+        for class_name in ("real", "fake"):
+            for idx in range(3):
+                Image.new("RGB", (64, 64), color=(255, 0, 0)).save(
+                    aligned_root / "Data Set 1" / "test" / class_name / f"{class_name}_{idx:03d}.jpg"
+                )
+
+        dataset = ForensicsFramePairDataset(
+            self.dataset_outer,
+            split="test",
+            pairing_mode="degenerate",
+            aligned_root=aligned_root,
+        )
+        sample = dataset[0]
+
+        self.assertEqual(tuple(sample["frame_a"].shape), (3, 64, 64))
+        self.assertIn("forensics_aligned", sample["path_a"])
+        self.assertEqual(sample["path_a"], sample["path_b"])
+
+    def test_face_align_uses_mock_mtcnn_and_fallback(self) -> None:
+        image = Image.new("RGB", (80, 72), color=(20, 40, 60))
+
+        class Detector:
+            def __init__(self, result):
+                self.result = result
+
+            def __call__(self, _image):
+                return self.result
+
+        aligned = align_face(image, mtcnn=Detector(Image.new("RGB", (64, 64), color=(1, 2, 3))))
+        fallback = align_face_or_fallback(image, image_size=64, mtcnn=Detector(None))
+
+        self.assertIsNotNone(aligned)
+        self.assertEqual(aligned.size, (64, 64))
+        self.assertEqual(fallback.size, (64, 64))

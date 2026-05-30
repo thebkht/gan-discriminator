@@ -27,6 +27,14 @@ dataloader:
   pin_memory: false
   drop_last: false
 
+forensics:
+  face_align: mtcnn
+  align_margin: 0.25
+  cache_dir: data/forensics_aligned
+  fallback: center_crop
+  pairing_mode: degenerate
+  threshold_dir: runs/forensics_threshold
+
 training:
   epochs: 100
   learning_rate: 0.0002

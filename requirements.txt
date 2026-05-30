@@ -8,3 +8,4 @@ tqdm
 tensorboard
 pyyaml
 matplotlib
+facenet-pytorch

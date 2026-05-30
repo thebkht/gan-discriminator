@@ -12,7 +12,9 @@ Primary handoff artifact for Dev 2:
 - `runs/forensics_eval/per_dataset/*/*_confusion_matrix.png`
 - `runs/forensics_eval/pooled/*_confusion_matrix.png`
 
-The run used the full CelebA train transfer cache at `runs/celeba_features/phase3_train_adjacent_cache.npz`, the Phase 3 checkpoint at `checkpoints/phase3_a_b_c.pt`, split `test`, and the `adjacent_same_class` forensics pairing contract.
+The baseline run used the full CelebA train transfer cache at `runs/celeba_features/phase3_train_adjacent_cache.npz`, the Phase 3 checkpoint at `checkpoints/phase3_a_b_c.pt`, split `test`, and the `adjacent_same_class` forensics pairing contract.
+
+The inference-only recovery harness now defaults new forensics evaluations to degenerate pairing, supports MTCNN-aligned caches from `scripts/preprocess_forensics_faces.py`, uses forensics validation threshold artifacts from `evaluation.forensics_threshold_sweep`, and exposes `--branch-b-invert-logits` plus horizontal-flip `--tta`. These are calibration and inference changes only; they do not change the negative-transfer conclusion below unless a new locked final run is generated and reported.
 
 ## In-Domain Proxy
 
